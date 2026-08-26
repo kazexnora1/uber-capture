@@ -9,8 +9,30 @@
         '→ 返却配送対象'
       ],
       expected: { store: 'マクドナルド 立川立飛店', address: '立川市柏町4丁目5-29' }
+    },
+    {
+      name: '2026-08-26_gusto',
+      lines: [
+        '◎合計18分(2.7km)',
+        'ガスト 国立駅前店 Gusto Kunitachi',
+        'Ekimae',
+        '国分寺市光町1丁目49-アットイー',
+        'ス',
+        '承諾'
+      ],
+      expected: { store: 'ガスト 国立駅前店 Gusto Kunitachi Ekimae', address: '国分寺市光町1丁目49-アットイース' }
     }
   ],
+
+  // 住所らしい行の始まり方（市区町村っぽい文字を含むか、番地っぽいか）
+  _looksLikeAddressStart: function (s) {
+    return /(市|区|町|村|丁目|[0-9０-９]+-)/.test(s);
+  },
+
+  // その行で店名/住所ブロックが終わるとみなす境界ワード
+  _isBoundary: function (s) {
+    return /^(→|承諾|キャンセル|完了)/.test(s) || /^◎/.test(s);
+  },
 
   parse: function (text) {
     var L = text.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
@@ -18,20 +40,39 @@
   },
 
   _parseLines: function (L) {
+    var self = this;
     var idx = -1;
     for (var i = 0; i < L.length; i++) {
       if (/km\)/.test(L[i]) || /^◎/.test(L[i])) { idx = i; break; }
     }
+    if (idx < 0) return { lines: L, store: '', address: '' };
+
+    var i = idx + 1;
+    var storeParts = [];
+    // 店名ブロック：住所っぽい行が来るまで結合
+    while (i < L.length && !self._looksLikeAddressStart(L[i]) && !self._isBoundary(L[i])) {
+      storeParts.push(L[i]);
+      i++;
+    }
+    var addrParts = [];
+    // 住所ブロック：境界ワードが来るまで結合
+    while (i < L.length && !self._isBoundary(L[i])) {
+      addrParts.push(L[i]);
+      i++;
+    }
+
     return {
       lines: L,
-      store: idx >= 0 ? (L[idx + 1] || '') : '',
-      address: idx >= 0 ? (L[idx + 2] || '') : ''
+      store: storeParts.join(' ').trim(),
+      address: addrParts.join('').trim()
     };
   },
 
   view: function (p) {
-    // 一時的に常に行番号付き生データを表示（デバッグ用）
-    return p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
+    if (!p.store || !p.address) {
+      return '⚠️ 解析失敗\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
+    }
+    return '🏪 ' + p.store + '\n📍 ' + p.address;
   },
 
   selfTest: function () {
@@ -43,7 +84,11 @@
     });
     var pass = results.filter(function (r) { return r.ok; }).length;
     var lines = results.map(function (r) {
-      return (r.ok ? '✅ ' : '❌ ') + r.name;
+      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.ok ? '' :
+        '\n   期待store: ' + r.expected.store +
+        '\n   結果store: ' + r.got.store +
+        '\n   期待addr : ' + r.expected.address +
+        '\n   結果addr : ' + r.got.address);
     });
     return pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
   }
