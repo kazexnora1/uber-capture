@@ -1,4 +1,6 @@
 ({
+  VERSION: '2026-08-26-01',
+
   fixtures: [
     {
       name: '2026-08-26_mcdonalds',
@@ -24,12 +26,10 @@
     }
   ],
 
-  // 住所らしい行の始まり方（市区町村っぽい文字を含むか、番地っぽいか）
   _looksLikeAddressStart: function (s) {
     return /(市|区|町|村|丁目|[0-9０-９]+-)/.test(s);
   },
 
-  // その行で店名/住所ブロックが終わるとみなす境界ワード
   _isBoundary: function (s) {
     return /^(→|承諾|キャンセル|完了)/.test(s) || /^◎/.test(s);
   },
@@ -49,13 +49,11 @@
 
     var i = idx + 1;
     var storeParts = [];
-    // 店名ブロック：住所っぽい行が来るまで結合
     while (i < L.length && !self._looksLikeAddressStart(L[i]) && !self._isBoundary(L[i])) {
       storeParts.push(L[i]);
       i++;
     }
     var addrParts = [];
-    // 住所ブロック：境界ワードが来るまで結合
     while (i < L.length && !self._isBoundary(L[i])) {
       addrParts.push(L[i]);
       i++;
@@ -70,9 +68,9 @@
 
   view: function (p) {
     if (!p.store || !p.address) {
-      return '⚠️ 解析失敗\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
+      return '⚠️ 解析失敗 (v' + this.VERSION + ')\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
     }
-    return '🏪 ' + p.store + '\n📍 ' + p.address;
+    return '🏪 ' + p.store + '\n📍 ' + p.address + '\n(v' + this.VERSION + ')';
   },
 
   selfTest: function () {
@@ -90,6 +88,6 @@
         '\n   期待addr : ' + r.expected.address +
         '\n   結果addr : ' + r.got.address);
     });
-    return pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
+    return 'version: ' + this.VERSION + '\n' + pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
   }
 })
