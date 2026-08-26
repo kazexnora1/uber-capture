@@ -30,11 +30,8 @@
   },
 
   view: function (p) {
-    if (!p.store || !p.address) {
-      // 解析に失敗した時は、行番号付きの生データを自動表示（デバッグ用）
-      return '⚠️ 解析失敗\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
-    }
-    return '🏪 ' + p.store + '\n📍 ' + p.address;
+    // 一時的に常に行番号付き生データを表示（デバッグ用）
+    return p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
   },
 
   selfTest: function () {
@@ -46,9 +43,7 @@
     });
     var pass = results.filter(function (r) { return r.ok; }).length;
     var lines = results.map(function (r) {
-      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.ok ? '' :
-        '\n   期待: ' + r.expected.store + ' / ' + r.expected.address +
-        '\n   結果: ' + r.got.store + ' / ' + r.got.address);
+      return (r.ok ? '✅ ' : '❌ ') + r.name;
     });
     return pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
   }
