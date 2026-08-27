@@ -66,12 +66,11 @@
     };
   },
 
-  view: function (p) {
-    if (!p.store || !p.address) {
-      return '⚠️ 解析失敗 (v' + this.VERSION + ')\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
-    }
-    return '🏪 ' + p.store + '\n📍 ' + p.address + '\n(v' + this.VERSION + ')';
+    view: function (p) {
+    // 一時的に常に行番号付き生データを表示（デバッグ用）
+    return p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
   },
+
 
   selfTest: function () {
     var self = this;
