@@ -53,7 +53,6 @@
   ],
 
   _looksLikeAddressStart: function (s) {
-    // 「町」単独は店名にも含まれうるため除外。市・丁目・番地(数字+ハイフン)のみを住所開始の目印にする
     return /(市|丁目|[0-9０-９]+-)/.test(s);
   },
 
@@ -107,4 +106,14 @@
       var ok = p.store === fx.expected.store && p.address === fx.expected.address;
       return { name: fx.name, ok: ok, got: p, expected: fx.expected };
     });
-    var pass = results.fil
+    var pass = results.filter(function (r) { return r.ok; }).length;
+    var lines = results.map(function (r) {
+      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.ok ? '' :
+        '\n   期待store: ' + r.expected.store +
+        '\n   結果store: ' + r.got.store +
+        '\n   期待addr : ' + r.expected.address +
+        '\n   結果addr : ' + r.got.address);
+    });
+    return 'version: ' + this.VERSION + '\n' + pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
+  }
+})
