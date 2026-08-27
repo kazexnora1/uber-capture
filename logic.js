@@ -35,4 +35,72 @@
         '一求',
         '承諾'
       ],
-      expected: { store: 'むさしの森珈琲 国立富士
+      expected: { store: 'むさしの森珈琲 国立富士見台店 Musashino Mori Coffee Kunitachi Fujimidai', address: '府中市宮西町5丁目11-関田コ一求' }
+    }
+  ],
+
+  _looksLikeAddressStart: function (s) {
+    return /(市|区|町|村|丁目|[0-9０-９]+-)/.test(s);
+  },
+
+  _isBoundary: function (s) {
+    return /^(→|承諾|キャンセル|完了)/.test(s) || /^◎/.test(s);
+  },
+
+  parse: function (text) {
+    var L = text.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+    return this._parseLines(L);
+  },
+
+  _parseLines: function (L) {
+    var self = this;
+    var idx = -1;
+    for (var i = 0; i < L.length; i++) {
+      if (/km\)/.test(L[i]) || /^◎/.test(L[i])) { idx = i; break; }
+    }
+    if (idx < 0) return { lines: L, store: '', address: '' };
+
+    var i = idx + 1;
+    var storeParts = [];
+    while (i < L.length && !self._looksLikeAddressStart(L[i]) && !self._isBoundary(L[i])) {
+      storeParts.push(L[i]);
+      i++;
+    }
+    var addrParts = [];
+    while (i < L.length && !self._isBoundary(L[i])) {
+      addrParts.push(L[i]);
+      i++;
+    }
+
+    return {
+      lines: L,
+      store: storeParts.join(' ').trim(),
+      address: addrParts.join('').trim()
+    };
+  },
+
+  view: function (p) {
+    if (!p.store || !p.address) {
+      return '⚠️ 解析失敗 (v' + this.VERSION + ')\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
+    }
+    return '🏪 ' + p.store + '\n📍 ' + p.address + '\n(v' + this.VERSION + ')';
+  },
+
+  selfTest: function () {
+    var self = this;
+    var results = this.fixtures.map(function (fx) {
+      var p = self._parseLines(fx.lines);
+      var ok = p.store === fx.expected.store && p.address === fx.expected.address;
+      return { name: fx.name, ok: ok, got: p, expected: fx.expected };
+    });
+    var pass = results.filter(function (r) { return r.ok; }).length;
+    var lines = results.map(function (r) {
+      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.ok ? '' :
+        '\n   期待store: ' + r.expected.store +
+        '\n   結果store: ' + r.got.store +
+        '\n   期待addr : ' + r.expected.address +
+        '\n   結果addr : ' + r.got.address);
+    });
+    return 'version: ' + this.VERSION + '\n' + pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
+  }
+})
