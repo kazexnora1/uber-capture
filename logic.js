@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-27-02',
+  VERSION: '2026-08-28-01',
 
   fixtures: [
     {
@@ -36,10 +36,19 @@
       name: '2026-08-27_katsuya',
       lines: ['◎合計21分（1.1km）', 'かつや立川北口 Katsuya', 'Tachikawa Kita', '立川市曙町3丁目2-17', '承諾'],
       expected: { store: 'かつや立川北口 Katsuya Tachikawa Kita', address: '立川市曙町3丁目2-17' }
+    },
+    {
+      name: '2026-08-28_hinoya',
+      lines: ['◎合計33分（6.5km）', '日乃屋カレー立川北口店', 'Hinoya curry Tachikawa', 'Kitaguchiten', '日野市神明4丁目20-アルカディ', '■', '承諾'],
+      expected: { store: '日乃屋カレー立川北口店 Hinoya curry Tachikawa Kitaguchiten', address: '日野市神明4丁目20-アルカディ' }
+    },
+    {
+      name: '2026-08-28_yutou',
+      lines: ['◎合計25分（3.3km）', '日本油党新宿東南口支部', '渋谷区本町1丁目28-5', '申込み', '都道423号', '423', '246'],
+      expected: { store: '日本油党新宿東南口支部', address: '渋谷区本町1丁目28-5' }
     }
   ],
 
-  // 住所の開始判定：市区町村名＋丁目/番地 のセットで判断する
   _looksLikeAddressStart: function (s) {
     if (/[都道府県]?.{1,6}[市区町村].*[0-9０-９]/.test(s)) return true;
     if (/[0-9０-９]+丁目/.test(s)) return true;
@@ -47,12 +56,11 @@
   },
 
   _isBoundary: function (s) {
-    if (/(承諾|キャンセル|完了|返却配送対象)/.test(s)) return true;
+    if (/(承諾|キャンセル|完了|返却配送対象|申込み)/.test(s)) return true;
     if (/^→/.test(s)) return true;
     return false;
   },
 
-  // 意味のないノイズ行（記号だけ、1文字だけ等）
   _isNoise: function (s) {
     if (/^[◎●○\s]*$/.test(s)) return true;
     return false;
@@ -91,7 +99,7 @@
     return {
       lines: L,
       store: storeParts.join(' ').trim(),
-      address: addrParts.join('').trim()
+      address: addrParts.join('').trim().replace(/[■□◆◇○●]+$/, '')
     };
   },
 
