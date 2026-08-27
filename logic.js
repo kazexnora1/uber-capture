@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-26-02',
+  VERSION: '2026-08-27-01',
 
   fixtures: [
     {
@@ -36,11 +36,25 @@
         '承諾'
       ],
       expected: { store: 'むさしの森珈琲 国立富士見台店 Musashino Mori Coffee Kunitachi Fujimidai', address: '府中市宮西町5丁目11-関田コ一求' }
+    },
+    {
+      name: '2026-08-27_yataizushi',
+      lines: [
+        '◎合計12分(1.6km)',
+        'や台ずし 立川曙町',
+        '立川市曙町2丁目42-23桜乃',
+        '承諾',
+        'フ',
+        '還年 至、目钮',
+        'ーデン'
+      ],
+      expected: { store: 'や台ずし 立川曙町', address: '立川市曙町2丁目42-23桜乃' }
     }
   ],
 
   _looksLikeAddressStart: function (s) {
-    return /(市|区|町|村|丁目|[0-9０-９]+-)/.test(s);
+    // 「町」単独は店名にも含まれうるため除外。市・丁目・番地(数字+ハイフン)のみを住所開始の目印にする
+    return /(市|丁目|[0-9０-９]+-)/.test(s);
   },
 
   _isBoundary: function (s) {
@@ -93,14 +107,4 @@
       var ok = p.store === fx.expected.store && p.address === fx.expected.address;
       return { name: fx.name, ok: ok, got: p, expected: fx.expected };
     });
-    var pass = results.filter(function (r) { return r.ok; }).length;
-    var lines = results.map(function (r) {
-      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.ok ? '' :
-        '\n   期待store: ' + r.expected.store +
-        '\n   結果store: ' + r.got.store +
-        '\n   期待addr : ' + r.expected.address +
-        '\n   結果addr : ' + r.got.address);
-    });
-    return 'version: ' + this.VERSION + '\n' + pass + '/' + results.length + ' 件成功\n' + lines.join('\n');
-  }
-})
+    var pass = results.fil
