@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-29-01',
+  VERSION: '2026-08-29-02',
 
   fixtures: [
     {
@@ -95,29 +95,33 @@
     return false;
   },
 
-  // 報酬額の行（例: ·605 / ¥394 / +·175）を探す
   _extractPrice: function (L) {
     for (var i = 0; i < L.length; i++) {
-      var m = L[i].match(/^\+?\s*[·¥￥]\s*(\d{2,5})$/);
-      if (m) return parseInt(m[1], 10);
+      var m = L[i].match(/^(\+)?\s*[·¥￥]\s*(\d{2,5})$/);
+      if (m) return { value: parseInt(m[2], 10), isAdditional: !!m[1] };
     }
     return null;
   },
 
-  // 「◎合計28分（4.9km）」の行から分数を取り出す
   _extractMinutes: function (kmLine) {
     if (!kmLine) return null;
     var m = kmLine.match(/(\d+)\s*分/);
     return m ? parseInt(m[1], 10) : null;
   },
 
-  // 「配達（2）」「配達(3)」からダブル/トリプル判定
   _extractMultiplier: function (L) {
     for (var i = 0; i < L.length; i++) {
       var m = L[i].match(/配達\s*[（(]\s*([0-9])\s*[）)]/);
       if (m) return parseInt(m[1], 10);
     }
     return 1;
+  },
+
+  _speakableStoreName: function (store) {
+    var parts = store.split(' ').filter(function (w) {
+      return /[ぁ-んァ-ヶ一-龠]/.test(w);
+    });
+    return parts.length ? parts.join(' ') : store;
   },
 
   parse: function (text) {
@@ -132,13 +136,22 @@
       if (/km[)）]/.test(L[i])) { idx = i; break; }
     }
 
-    var price = self._extractPrice(L);
+    var priceInfo = self._extractPrice(L);
     var minutes = idx >= 0 ? self._extractMinutes(L[idx]) : null;
     var multiplier = self._extractMultiplier(L);
-    var hourlyRate = (price && minutes) ? Math.round(price / minutes * 60) : null;
+    var hourlyRate = (priceInfo && minutes) ? Math.round(priceInfo.value / minutes * 60) : null;
+
+    var base = {
+      lines: L,
+      price: priceInfo ? priceInfo.value : null,
+      isAdditional: priceInfo ? priceInfo.isAdditional : false,
+      minutes: minutes,
+      multiplier: multiplier,
+      hourlyRate: hourlyRate
+    };
 
     if (idx < 0) {
-      return { lines: L, store: '', address: '', price: price, minutes: minutes, multiplier: multiplier, hourlyRate: hourlyRate };
+      return Object.assign(base, { store: '', address: '' });
     }
 
     var i = idx + 1;
@@ -158,33 +171,30 @@
       i++;
     }
 
-    return {
-      lines: L,
+    return Object.assign(base, {
       store: storeParts.join(' ').trim(),
-      address: addrParts.join('').trim().replace(/[■□◆◇○●]+$/, ''),
-      price: price,
-      minutes: minutes,
-      multiplier: multiplier,
-      hourlyRate: hourlyRate
-    };
+      address: addrParts.join('').trim().replace(/[■□◆◇○●]+$/, '')
+    });
   },
 
   view: function (p) {
     if (!p.store || !p.address) {
       return '⚠️ 解析失敗 (v' + this.VERSION + ')\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
     }
-    var extra = (p.hourlyRate ? ' 時給約' + p.hourlyRate + '円' : '') + (p.multiplier > 1 ? ' x' + p.multiplier : '');
+    var extra = (p.hourlyRate ? ' 時給約' + p.hourlyRate + '円' : '') + (p.multiplier > 1 ? ' x' + p.multiplier : '') + (p.isAdditional ? ' [追加]' : '');
     return '🏪 ' + p.store + '\n📍 ' + p.address + extra + '\n(v' + this.VERSION + ')';
   },
 
-  // 読み上げ用の短い文章を作る
   speak: function (p) {
     if (!p.store || !p.address) {
       return '読み取りに失敗しました';
     }
     var parts = [];
+    if (p.isAdditional) {
+      parts.push('追加の配達です');
+    }
     if (p.hourlyRate) parts.push('時給' + p.hourlyRate + '円');
-    parts.push('まず' + p.store + 'へ');
+    parts.push(this._speakableStoreName(p.store) + 'へ');
     if (p.multiplier === 2) parts.push('ダブルです');
     else if (p.multiplier === 3) parts.push('トリプルです');
     else if (p.multiplier >= 4) parts.push(p.multiplier + '連続です');
