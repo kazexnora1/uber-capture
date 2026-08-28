@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-29-02',
+  VERSION: '2026-08-29-03',
 
   fixtures: [
     {
@@ -61,6 +61,11 @@
       name: '2026-08-28_reerie',
       lines: ['◎ 合計12分（1.4km）', 'REÉRIE YOUYI SHANG DIAN', '立川市錦町1丁目13-立川サニーコート立川サニーコート', '承諾'],
       expected: { store: 'REÉRIE YOUYI SHANG DIAN', address: '立川市錦町1丁目13-立川サニーコート立川サニーコート' }
+    },
+    {
+      name: '2026-08-29_asian_bistro',
+      lines: ['◎合計28分（4.7km）', 'アジアンビストロDai 立川グリー', '・ンスプリングス店 AsianBistroDai', 'TACHIKAWA GREEN SPRINGS', '0', '昭島市もくせいの杜2丁目', '承諾'],
+      expected: { store: 'アジアンビストロDai 立川グリー ・ンスプリングス店 AsianBistroDai TACHIKAWA GREEN SPRINGS', address: '昭島市もくせいの杜2丁目' }
     }
   ],
 
@@ -92,6 +97,7 @@
   _isNoiseInStore: function (s) {
     if (this._isNoise(s)) return true;
     if (/^[ァ-ヶ]{1}$/.test(s)) return true;
+    if (/^[0-9０-９]{1,2}$/.test(s)) return true;
     return false;
   },
 
