@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-28-03',
+  VERSION: '2026-08-28-04',
 
   fixtures: [
     {
@@ -77,9 +77,15 @@
     return false;
   },
 
+  // 記号だけの行のみ共通ノイズ扱い
   _isNoise: function (s) {
-    if (/^[◎●○\s]*$/.test(s)) return true;
-    if (/^[ァ-ヶ一-龠]{1}$/.test(s)) return true;
+    return /^[◎●○\s]*$/.test(s);
+  },
+
+  // 店名ブロック探索中に限り、単独カタカナ1文字もノイズとして無視（住所側には影響させない）
+  _isNoiseInStore: function (s) {
+    if (this._isNoise(s)) return true;
+    if (/^[ァ-ヶ]{1}$/.test(s)) return true;
     return false;
   },
 
@@ -100,7 +106,7 @@
     var storeParts = [];
     while (i < L.length) {
       var s = L[i];
-      if (self._isNoise(s)) { i++; continue; }
+      if (self._isNoiseInStore(s)) { i++; continue; }
       if (self._looksLikeAddressStart(s) || self._isBoundary(s)) break;
       storeParts.push(s);
       i++;
