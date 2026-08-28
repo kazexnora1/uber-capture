@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-28-02',
+  VERSION: '2026-08-28-03',
 
   fixtures: [
     {
@@ -51,6 +51,16 @@
       name: '2026-08-28_afuri',
       lines: ['◎合計39分（5.6km）', 'AFURI 立川グリーンスプリングス', 'AFURI Tachikawa Green Springs', 'ロ', '日野市日野', '承諾'],
       expected: { store: 'AFURI 立川グリーンスプリングス AFURI Tachikawa Green Springs', address: '日野市日野' }
+    },
+    {
+      name: '2026-08-28_gusto_sakaemachi',
+      lines: ['◎ 合計+5分（+0km）', 'ガスト 立川栄店 Gusto', 'Tachikawa Sakae', '立川市幸町2丁目都営立川幸町二丁目アパート1号', '◎ 注文の品の受け渡し場所は同・・・', '承諾'],
+      expected: { store: 'ガスト 立川栄店 Gusto Tachikawa Sakae', address: '立川市幸町2丁目都営立川幸町二丁目アパート1号' }
+    },
+    {
+      name: '2026-08-28_reerie',
+      lines: ['◎ 合計12分（1.4km）', 'REÉRIE YOUYI SHANG DIAN', '立川市錦町1丁目13-立川サニーコート立川サニーコート', '承諾'],
+      expected: { store: 'REÉRIE YOUYI SHANG DIAN', address: '立川市錦町1丁目13-立川サニーコート立川サニーコート' }
     }
   ],
 
@@ -62,7 +72,7 @@
   },
 
   _isBoundary: function (s) {
-    if (/(承諾|キャンセル|完了|返却配送対象|申込み)/.test(s)) return true;
+    if (/(承諾|キャンセル|完了|返却配送対象|申込み|注文の品の受け渡し場所)/.test(s)) return true;
     if (/^→/.test(s)) return true;
     return false;
   },
