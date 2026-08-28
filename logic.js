@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-28-01',
+  VERSION: '2026-08-28-02',
 
   fixtures: [
     {
@@ -46,12 +46,18 @@
       name: '2026-08-28_yutou',
       lines: ['◎合計25分（3.3km）', '日本油党新宿東南口支部', '渋谷区本町1丁目28-5', '申込み', '都道423号', '423', '246'],
       expected: { store: '日本油党新宿東南口支部', address: '渋谷区本町1丁目28-5' }
+    },
+    {
+      name: '2026-08-28_afuri',
+      lines: ['◎合計39分（5.6km）', 'AFURI 立川グリーンスプリングス', 'AFURI Tachikawa Green Springs', 'ロ', '日野市日野', '承諾'],
+      expected: { store: 'AFURI 立川グリーンスプリングス AFURI Tachikawa Green Springs', address: '日野市日野' }
     }
   ],
 
   _looksLikeAddressStart: function (s) {
     if (/[都道府県]?.{1,6}[市区町村].*[0-9０-９]/.test(s)) return true;
     if (/[0-9０-９]+丁目/.test(s)) return true;
+    if (/[都道府県]?.{1,6}[市区町村]$/.test(s)) return true;
     return false;
   },
 
@@ -63,6 +69,7 @@
 
   _isNoise: function (s) {
     if (/^[◎●○\s]*$/.test(s)) return true;
+    if (/^[ァ-ヶ一-龠]{1}$/.test(s)) return true;
     return false;
   },
 
