@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-29-05',
+  VERSION: '2026-08-29-06',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -131,7 +131,6 @@
     if (p.isAdditional) {
       parts.push('追加の配達です');
     }
-    if (p.hourlyRate) parts.push('時給' + p.hourlyRate + '円');
     parts.push(this._speakableStoreName(p.store) + 'へ');
     if (p.multiplier === 2) parts.push('ダブルです');
     else if (p.multiplier === 3) parts.push('トリプルです');
