@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-29-06',
+  VERSION: '2026-08-30-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -17,7 +17,7 @@
   },
 
   _isBoundary: function (s) {
-    if (/(承諾|キャンセル|完了|返却配送対象|申込み|注文の品の受け渡し場所)/.test(s)) return true;
+    if (/(承諾|キャンセル|完了|返却配送対象|申込み|注文の品の受け渡し場所|マッチする)/.test(s)) return true;
     if (/^→/.test(s)) return true;
     return false;
   },
