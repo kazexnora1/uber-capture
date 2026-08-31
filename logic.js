@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-30-01',
+  VERSION: '2026-08-31-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -47,6 +47,12 @@
     return m ? parseInt(m[1], 10) : null;
   },
 
+  _extractKm: function (kmLine) {
+    if (!kmLine) return null;
+    var m = kmLine.match(/([\d.]+)\s*km/);
+    return m ? parseFloat(m[1]) : null;
+  },
+
   _extractMultiplier: function (L) {
     for (var i = 0; i < L.length; i++) {
       var m = L[i].match(/配達\s*[（(]\s*([0-9])\s*[）)]/);
@@ -76,6 +82,7 @@
 
     var priceInfo = self._extractPrice(L);
     var minutes = idx >= 0 ? self._extractMinutes(L[idx]) : null;
+    var km = idx >= 0 ? self._extractKm(L[idx]) : null;
     var multiplier = self._extractMultiplier(L);
     var hourlyRate = (priceInfo && minutes) ? Math.round(priceInfo.value / minutes * 60) : null;
 
@@ -84,6 +91,7 @@
       price: priceInfo ? priceInfo.value : null,
       isAdditional: priceInfo ? priceInfo.isAdditional : false,
       minutes: minutes,
+      km: km,
       multiplier: multiplier,
       hourlyRate: hourlyRate
     };
