@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-08-31-01',
+  VERSION: '2026-09-04-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -12,8 +12,16 @@
     '御蔵島村','八丈町','青ヶ島村','小笠原村'
   ],
 
+  _addressStartIndex: function (s) {
+    for (var i = 0; i < this._TOKYO_MUNICIPALITIES.length; i++) {
+      var idx = s.indexOf(this._TOKYO_MUNICIPALITIES[i]);
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  },
+
   _looksLikeAddressStart: function (s) {
-    return this._TOKYO_MUNICIPALITIES.some(function (m) { return s.indexOf(m) !== -1; });
+    return this._addressStartIndex(s) !== -1;
   },
 
   _isBoundary: function (s) {
@@ -35,8 +43,8 @@
 
   _extractPrice: function (L) {
     for (var i = 0; i < L.length; i++) {
-      var m = L[i].match(/^(\+)?\s*[·¥￥]\s*(\d{2,5})$/);
-      if (m) return { value: parseInt(m[2], 10), isAdditional: !!m[1] };
+      var m = L[i].match(/^(\+)?\s*[·¥￥]\s*([\d,]{2,7})$/);
+      if (m) return { value: parseInt(m[2].replace(/,/g, ''), 10), isAdditional: !!m[1] };
     }
     return null;
   },
@@ -105,7 +113,15 @@
     while (i < L.length) {
       var s = L[i];
       if (self._isNoiseInStore(s)) { i++; continue; }
-      if (self._looksLikeAddressStart(s) || self._isBoundary(s)) break;
+      if (self._isBoundary(s)) break;
+      var addrIdx = self._addressStartIndex(s);
+      if (addrIdx === 0) break;
+      if (addrIdx > 0) {
+        var storePart = s.slice(0, addrIdx).trim();
+        if (storePart) storeParts.push(storePart);
+        L[i] = s.slice(addrIdx);
+        break;
+      }
       storeParts.push(s);
       i++;
     }
