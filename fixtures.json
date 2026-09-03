@@ -11,5 +11,7 @@
   { "name": "2026-08-28_afuri", "lines": ["◎合計39分（5.6km）", "AFURI 立川グリーンスプリングス", "AFURI Tachikawa Green Springs", "ロ", "日野市日野", "承諾"], "expected": { "store": "AFURI 立川グリーンスプリングス AFURI Tachikawa Green Springs", "address": "日野市日野" } },
   { "name": "2026-08-28_gusto_sakaemachi", "lines": ["◎ 合計+5分（+0km）", "ガスト 立川栄店 Gusto", "Tachikawa Sakae", "立川市幸町2丁目都営立川幸町二丁目アパート1号", "◎ 注文の品の受け渡し場所は同・・・", "承諾"], "expected": { "store": "ガスト 立川栄店 Gusto Tachikawa Sakae", "address": "立川市幸町2丁目都営立川幸町二丁目アパート1号" } },
   { "name": "2026-08-28_reerie", "lines": ["◎ 合計12分（1.4km）", "REÉRIE YOUYI SHANG DIAN", "立川市錦町1丁目13-立川サニーコート立川サニーコート", "承諾"], "expected": { "store": "REÉRIE YOUYI SHANG DIAN", "address": "立川市錦町1丁目13-立川サニーコート立川サニーコート" } },
-  { "name": "2026-08-29_asian_bistro", "lines": ["◎合計28分（4.7km）", "アジアンビストロDai 立川グリー", "・ンスプリングス店 AsianBistroDai", "TACHIKAWA GREEN SPRINGS", "0", "昭島市もくせいの杜2丁目", "承諾"], "expected": { "store": "アジアンビストロDai 立川グリー ・ンスプリングス店 AsianBistroDai TACHIKAWA GREEN SPRINGS", "address": "昭島市もくせいの杜2丁目" } }
+  { "name": "2026-08-29_asian_bistro", "lines": ["◎合計28分（4.7km）", "アジアンビストロDai 立川グリー", "・ンスプリングス店 AsianBistroDai", "TACHIKAWA GREEN SPRINGS", "0", "昭島市もくせいの杜2丁目", "承諾"], "expected": { "store": "アジアンビストロDai 立川グリー ・ンスプリングス店 AsianBistroDai TACHIKAWA GREEN SPRINGS", "address": "昭島市もくせいの杜2丁目" } },
+  { "name": "2026-09-02_kowloon_split", "lines": ["◎合計16分（2.7km）", "香港屋 小平店小平市仲町", "承諾"], "expected": { "store": "香港屋 小平店", "address": "小平市仲町" } },
+  { "name": "2026-09-04_toyoda_comma", "lines": ["◎合計33分（6.4km）", "マクドナルド 豊田店 McDonald's", "TOYODA", "日野市三沢5丁目11-13", "承諾"], "expected": { "store": "マクドナルド 豊田店 McDonald's TOYODA", "address": "日野市三沢5丁目11-13" } }
 ]
