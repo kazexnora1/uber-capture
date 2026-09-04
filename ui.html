@@ -16,6 +16,10 @@
     --link: #1f5fa8;
     --memo: #fdf8e7;
     --memoline: #e0d3a3;
+    --pick: #eef3fb;
+    --pickline: #b9cdea;
+    --drop: #fbeeee;
+    --dropline: #e3bcbc;
   }
 
   * { box-sizing: border-box; }
@@ -90,21 +94,59 @@
   .block { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   .block:last-child { border-bottom: 0; }
 
+  /* ---- ピック / ドロップ ---- */
+  .stop {
+    margin: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    padding: 12px 12px;
+  }
+  .stop.pick { background: var(--pick); border-color: var(--pickline); }
+  .stop.drop { background: var(--drop); border-color: var(--dropline); }
+
+  .stop .label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stop .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .stop.pick .dot { background: var(--link); }
+  .stop.drop .dot { background: var(--warn); }
+
+  .stop-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 6px 0 8px;
+  }
+  .stop-text p {
+    margin: 0;
+    flex: 1 1 auto;
+    line-height: 1.4;
+  }
+  .stop.pick .stop-text p { font-size: 18px; font-weight: 600; }
+  .stop.drop .stop-text p { font-size: 16px; }
+
+  .copy {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .copy:active { background: var(--line); }
+  .copy.copied { color: var(--good); border-color: var(--good); }
+
   .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-
-  .store {
-    font-size: 19px;
-    font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: .01em;
-    margin: 0 0 10px;
-  }
-
-  .addr {
-    font-size: 16px;
-    line-height: 1.45;
-    margin: 0 0 10px;
-  }
 
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
@@ -279,6 +321,52 @@ function rateClass(rate) {
   return '';
 }
 
+/* data-copy属性に入れた文字列をコピーする。属性経由にするのはエスケープを一箇所に集約するため */
+function copyText(btn, text) {
+  var reset = function () {
+    btn.classList.remove('copied');
+    btn.textContent = '⧉';
+  };
+
+  var done = function (ok) {
+    btn.classList.toggle('copied', ok);
+    btn.textContent = ok ? '✓' : '✕';
+    setTimeout(reset, 1200);
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    return;
+  }
+
+  // クリップボードAPIが使えない場合のフォールバック
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    done(document.execCommand('copy'));
+  } catch (err) {
+    done(false);
+  }
+  document.body.removeChild(ta);
+}
+
+function stopBlock(kind, label, text, extraHtml) {
+  var dotLabel = kind === 'pick' ? 'ピック' : 'ドロップ';
+  return '<div class="stop ' + kind + '">'
+    +   '<div class="label"><span class="dot"></span>' + dotLabel + '</div>'
+    +   '<div class="stop-text">'
+    +     '<p>' + esc(text) + '</p>'
+    +     '<button class="copy" type="button" data-copy="' + esc(text) + '" aria-label="' + dotLabel + 'をコピー">⧉</button>'
+    +   '</div>'
+    +   (extraHtml || '')
+    + '</div>';
+}
+
 function render() {
   if (!HISTORY.length) {
     card.innerHTML = '<div class="empty">まだ履歴がありません。<br>配達リクエストをキャプチャすると、ここに残ります。</div>';
@@ -302,27 +390,21 @@ function render() {
         +   '<button id="next" aria-label="1件後">&#8594;</button>'
         + '</div>';
 
-  html += '<div class="block">'
-        +   '<div class="label">ピック</div>'
-        +   '<p class="store">' + esc(d.store) + '</p>'
-        +   '<div class="row">'
-        +     '<a class="btn" target="_blank" rel="noopener" href="'
-        +       esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">マップで開く</a>'
-        +     '<a class="btn" target="_blank" rel="noopener" href="'
-        +       esc(searchUrl(d.store)) + '">Googleで検索</a>'
-        +   '</div>'
-        + '</div>';
+  var pickExtra = '<div class="row">'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">マップで開く</a>'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(searchUrl(d.store)) + '">Googleで検索</a>'
+    + '</div>';
+  html += stopBlock('pick', 'ピック', d.store, pickExtra);
 
   html += '<div class="block" id="memoBlock"></div>';
 
-  html += '<div class="block">'
-        +   '<div class="label">ドロップ</div>'
-        +   '<p class="addr">' + esc(d.address) + '</p>'
-        +   '<div class="row">'
-        +     '<a class="btn" target="_blank" rel="noopener" href="'
-        +       esc(mapsUrl(d.address)) + '">マップで開く</a>'
-        +   '</div>'
-        + '</div>';
+  var dropExtra = '<div class="row">'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(mapsUrl(d.address)) + '">マップで開く</a>'
+    + '</div>';
+  html += stopBlock('drop', 'ドロップ', d.address, dropExtra);
 
   html += '<div class="block">'
         +   '<div class="stats ' + cls + '">'
@@ -359,6 +441,10 @@ function render() {
   next.disabled = (idx <= 0);
   prev.onclick = function () { go(1); };
   next.onclick = function () { go(-1); };
+
+  card.querySelectorAll('.copy').forEach(function (btn) {
+    btn.onclick = function () { copyText(btn, btn.getAttribute('data-copy')); };
+  });
 
   renderMemo();
 }
