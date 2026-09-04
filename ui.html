@@ -43,6 +43,8 @@
     overflow: hidden;
   }
 
+  .card + .card { margin-top: 10px; }
+
   .card.swap { animation: fade .16s ease-out; }
   @keyframes fade { from { opacity: .35; } to { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) {
@@ -147,9 +149,8 @@
   .memo-empty { font-size: 14px; color: var(--muted); }
   .memo-time { margin-top: 6px; font-size: 12px; color: var(--muted); }
 
-  textarea {
+  textarea, .field {
     width: 100%;
-    min-height: 88px;
     padding: 10px 12px;
     font-family: inherit;
     font-size: 16px;
@@ -158,8 +159,12 @@
     background: var(--memo);
     border: 1px solid var(--memoline);
     border-radius: 8px;
-    resize: vertical;
   }
+
+  textarea { min-height: 88px; resize: vertical; }
+
+  .field { background: var(--bg); border-color: var(--line); }
+  .field::placeholder { color: var(--muted); }
 
   .memo-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
   .note { font-size: 13px; color: var(--muted); }
@@ -206,12 +211,28 @@
     line-height: 1.6;
   }
 
+  .finder .row { margin-top: 8px; }
+  .finder .field { flex: 1 1 auto; min-width: 0; }
+
   :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card" id="card"><div class="empty">読み込んでいます</div></div>
+
+  <div class="card finder">
+    <div class="block">
+      <div class="label">住所検索</div>
+      <form id="finderForm">
+        <div class="row">
+          <input class="field" id="finderInput" type="text" inputmode="search"
+                 placeholder="住所や施設名を入力" autocomplete="off">
+          <button class="btn go" type="submit">マップで開く</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -440,12 +461,26 @@ function openEditor() {
   };
 }
 
+/* ---- 住所検索（履歴と独立、単体の機能） ---- */
+
+(function () {
+  var form = document.getElementById('finderForm');
+  var input = document.getElementById('finderInput');
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var q = input.value.trim();
+    if (!q) return;
+    window.open(mapsUrl(q), '_blank', 'noopener');
+  });
+})();
+
 /* 左右スワイプでも移動できるようにする */
 (function () {
   var x0 = null, y0 = null;
 
   document.addEventListener('touchstart', function (e) {
-    if (e.target.tagName === 'TEXTAREA') { x0 = null; return; }
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') { x0 = null; return; }
     x0 = e.touches[0].clientX;
     y0 = e.touches[0].clientY;
   }, { passive: true });
