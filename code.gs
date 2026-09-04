@@ -23,19 +23,14 @@ function doPost(e) {
   return loadApp_().doPost(e);
 }
 
-function apiCall(name, args) {
-  return loadApp_().api(name, args || []);
-}
-
 /**
  * この関数は呼ばれない。app.js は eval 経由で実行されるため、
- * DriveApp/HtmlService の利用がGASの権限自動検出に見えない。
- * ここに実際の呼び出しを書いておくことで、Web Appに必要な
- * スコープ（Drive・HTML出力）を正しく認識・要求させる。
+ * DriveAppの利用がGASの権限自動検出に見えない。
+ * ここに実際の呼び出しを書いておくことで、必要なスコープを
+ * 正しく認識・要求させる。
  */
 function ensureScopes_() {
   if (false) {
     DriveApp.getRootFolder();
-    HtmlService.createHtmlOutput('');
   }
 }
