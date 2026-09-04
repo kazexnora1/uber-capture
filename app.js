@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-02',
+  VERSION: '2026-09-05-03',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -9,10 +9,12 @@
   LAST_FILE: 'last.json',
   HISTORY_FILE: 'history.json',
   STORES_FILE: 'stores.json',
+  STOREINFO_FILE: 'storeinfo.json',
 
   HISTORY_MAX: 20,
+  GEMINI_MODEL: 'gemini-2.5-flash',
 
-  /* ---------- 入口（ショートカットからのPOST） ---------- */
+  /* ---------- 入口（ショートカットからのPOST／画面からのAPI呼び出し） ---------- */
 
   doPost: function (e) {
     var payload;
@@ -122,18 +124,91 @@
     return { status: 'saved', entry: entry };
   },
 
+  /**
+   * 店の情報をGemini(Web検索つき)で調べる。店名をキーにキャッシュし、
+   * 一度調べた店は次回以降APIを呼ばない。
+   */
+  api_storeInfo: function (store, address) {
+    if (!store) return { status: 'empty' };
+
+    var cache = this.readJson(this.STOREINFO_FILE, {});
+    if (cache[store]) {
+      return { status: 'found', text: cache[store].text, updatedAt: cache[store].updatedAt };
+    }
+    return this.fetchStoreInfo(store, address, cache);
+  },
+
+  /**
+   * キャッシュを捨てて調べ直す。
+   */
+  api_refreshStoreInfo: function (store, address) {
+    if (!store) return { status: 'empty' };
+
+    var cache = this.readJson(this.STOREINFO_FILE, {});
+    delete cache[store];
+    return this.fetchStoreInfo(store, address, cache);
+  },
+
+  fetchStoreInfo: function (store, address, cache) {
+    var key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!key) return { status: 'nokey' };
+
+    try {
+      var prompt = '次の店舗について、Web検索して分かる範囲で日本語で簡潔に教えてください。'
+        + '特に「何階にあるか」「どの建物・商業施設の中にあるか」「営業しているか」を優先し、'
+        + '分からないことは無理に埋めず「不明」と書いてください。3行以内で、前置きなしに本文だけ書いてください。\n'
+        + '店名: ' + store + '\n'
+        + '住所: ' + (address || '(不明)');
+
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+        + this.GEMINI_MODEL + ':generateContent?key=' + key;
+
+      var resp = UrlFetchApp.fetch(url, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          tools: [{ google_search: {} }]
+        }),
+        muteHttpExceptions: true
+      });
+
+      if (resp.getResponseCode() !== 200) {
+        return { status: 'error', message: 'HTTP ' + resp.getResponseCode() + ': ' + resp.getContentText().slice(0, 200) };
+      }
+
+      var body = JSON.parse(resp.getContentText());
+      var cand = body.candidates && body.candidates[0];
+      var parts = cand && cand.content && cand.content.parts;
+      var text = parts && parts.map(function (p) { return p.text || ''; }).join('').trim();
+
+      if (!text) return { status: 'notfound' };
+
+      var entry = { text: text, updatedAt: this.stamp('yyyy-MM-dd HH:mm') };
+      cache[store] = entry;
+      this.writeJson(this.STOREINFO_FILE, cache);
+
+      return { status: 'found', text: entry.text, updatedAt: entry.updatedAt };
+    } catch (err) {
+      return { status: 'error', message: String(err) };
+    }
+  },
+
   /* ---------- 画面へのデータ提供（GitHub Pagesからfetchされる） ---------- */
 
   getData: function () {
     var history = this.readJson(this.HISTORY_FILE, []);
     var stores = this.readJson(this.STORES_FILE, {});
+    var infoCache = this.readJson(this.STOREINFO_FILE, {});
 
     var memos = {};
+    var infos = {};
     history.forEach(function (h) {
       if (h.store && stores[h.store]) memos[h.store] = stores[h.store];
+      if (h.store && infoCache[h.store]) infos[h.store] = infoCache[h.store];
     });
 
-    return this.jsonOut({ history: history, memos: memos });
+    return this.jsonOut({ history: history, memos: memos, infos: infos });
   },
 
   /* ---------- 診断 ---------- */
@@ -169,6 +244,9 @@
     } catch (err) {
       lines.push('history.json: NG ' + err);
     }
+
+    var geminiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    lines.push('gemini key: ' + (geminiKey ? 'set' : 'not set'));
 
     return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
   },
