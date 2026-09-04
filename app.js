@@ -56,6 +56,9 @@
   },
 
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.diag) {
+      return this.diag();
+    }
     if (e && e.parameter && e.parameter.ui) {
       return this.serveUi();
     }
@@ -131,6 +134,43 @@
     return HtmlService.createHtmlOutput(html)
       .setTitle('配達履歴')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
+  },
+
+  /* ---------- 診断 ---------- */
+
+  diag: function () {
+    var lines = [];
+
+    try {
+      var folder = DriveApp.getFolderById(this.FOLDER_ID);
+      lines.push('folder: OK (' + folder.getName() + ')');
+    } catch (err) {
+      lines.push('folder: NG ' + err);
+      return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
+    }
+
+    try {
+      this.getFile('diag_test.txt').setContent('diag ' + new Date());
+      lines.push('write: OK');
+    } catch (err) {
+      lines.push('write: NG ' + err);
+    }
+
+    try {
+      var files = DriveApp.getFolderById(this.FOLDER_ID).getFilesByName('diag_test.txt');
+      lines.push(files.hasNext() ? 'read: OK' : 'read: NG not found');
+    } catch (err) {
+      lines.push('read: NG ' + err);
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, 'NOFILE');
+      lines.push('history.json: ' + JSON.stringify(history));
+    } catch (err) {
+      lines.push('history.json: NG ' + err);
+    }
+
+    return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
   },
 
   /* ---------- 保存まわり ---------- */
