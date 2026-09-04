@@ -2,6 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>配達履歴</title>
 <style>
   :root {
     --bg: #e9edf0;
@@ -47,7 +49,6 @@
     .card.swap { animation: none; }
   }
 
-  /* ---- ヘッダー ---- */
   .nav {
     display: flex;
     align-items: center;
@@ -84,7 +85,6 @@
     color: var(--ink);
   }
 
-  /* ---- 本体 ---- */
   .block { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   .block:last-child { border-bottom: 0; }
 
@@ -133,7 +133,6 @@
     border-color: var(--link);
   }
 
-  /* ---- 店メモ ---- */
   .memo {
     background: var(--memo);
     border-left: 4px solid var(--memoline);
@@ -145,16 +144,8 @@
     word-break: break-word;
   }
 
-  .memo-empty {
-    font-size: 14px;
-    color: var(--muted);
-  }
-
-  .memo-time {
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--muted);
-  }
+  .memo-empty { font-size: 14px; color: var(--muted); }
+  .memo-time { margin-top: 6px; font-size: 12px; color: var(--muted); }
 
   textarea {
     width: 100%;
@@ -170,16 +161,9 @@
     resize: vertical;
   }
 
-  .memo-foot {
-    margin-top: 8px;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-
+  .memo-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
   .note { font-size: 13px; color: var(--muted); }
 
-  /* ---- 数字 ---- */
   .stats {
     display: flex;
     align-items: stretch;
@@ -202,11 +186,7 @@
   .stats.good .rate .v { color: var(--good); }
   .stats.warn .rate .v { color: var(--warn); }
 
-  .sub {
-    margin-top: 8px;
-    font-size: 14px;
-    color: var(--muted);
-  }
+  .sub { margin-top: 8px; font-size: 14px; color: var(--muted); }
 
   .tags { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   .tag {
@@ -231,12 +211,15 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="card" id="card"></div>
+  <div class="card" id="card"><div class="empty">読み込んでいます</div></div>
 </div>
 
 <script>
-var HISTORY = /*__HISTORY__*/[];
-var MEMOS = /*__MEMOS__*/{};
+/* GASのデプロイURL（Shortcutsのpostと同じもの） */
+var API_URL = 'https://script.google.com/macros/s/★ここに実際のデプロイIDを入れる★/exec';
+
+var HISTORY = [];
+var MEMOS = {};
 
 var RATE_GOOD = 1500;
 var RATE_WARN = 1250;
@@ -432,8 +415,12 @@ function openEditor() {
     save.disabled = true;
     note.textContent = '保存しています';
 
-    google.script.run
-      .withSuccessHandler(function (r) {
+    fetch(API_URL, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'saveMemo', args: [d.store, body] })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
         if (r && r.status === 'saved') {
           MEMOS[d.store] = r.entry;
         } else if (r && r.status === 'deleted') {
@@ -446,11 +433,10 @@ function openEditor() {
         editing = false;
         renderMemo();
       })
-      .withFailureHandler(function () {
+      .catch(function () {
         save.disabled = false;
-        note.textContent = '保存できませんでした';
-      })
-         .apiCall('saveMemo', [d.store, body]);
+        note.textContent = '保存できませんでした（通信エラー）';
+      });
   };
 }
 
@@ -475,7 +461,17 @@ function openEditor() {
   }, { passive: true });
 })();
 
-render();
+/* 起動時にGASからデータを取得 */
+fetch(API_URL + '?data=1')
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    HISTORY = data.history || [];
+    MEMOS = data.memos || {};
+    render();
+  })
+  .catch(function () {
+    card.innerHTML = '<div class="empty">データを取得できませんでした。<br>電波状況を確認するか、時間をおいて開き直してください。</div>';
+  });
 </script>
 </body>
 </html>
