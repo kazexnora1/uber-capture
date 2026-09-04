@@ -1,9 +1,8 @@
 ({
-  VERSION: '2026-09-05-01',
+  VERSION: '2026-09-05-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
-  SRC_UI: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/ui.html',
 
   FOLDER_ID: '1dGJeT9UA8BG0aCVWJd8lUxDBz1fyw0VJ',
   LOG_FILE: 'log.txt',
@@ -13,13 +12,24 @@
 
   HISTORY_MAX: 20,
 
-  /* ---------- 入口 ---------- */
+  /* ---------- 入口（ショートカットからのPOST） ---------- */
 
   doPost: function (e) {
+    var payload;
+    try {
+      payload = JSON.parse(e.postData.contents);
+    } catch (err) {
+      return this.jsonOut({ status: 'error', message: 'bad request' });
+    }
+
+    // 画面（GitHub Pages）から呼ばれるAPI操作
+    if (payload.action) {
+      return this.jsonOut(this.api(payload.action, payload.args || []));
+    }
+
+    // 以下は従来通り、ショートカットからのキャプチャ処理
     var res = { view: '', store: '', address: '', speak: '', ok: false };
     try {
-      var payload = JSON.parse(e.postData.contents);
-
       if (payload.note) {
         res.view = this.appendNote(payload.note) ? 'メモ記録しました' : 'メモ記録失敗';
         return this.out(res);
@@ -59,8 +69,8 @@
     if (e && e.parameter && e.parameter.diag) {
       return this.diag();
     }
-    if (e && e.parameter && e.parameter.ui) {
-      return this.serveUi();
+    if (e && e.parameter && e.parameter.data) {
+      return this.getData();
     }
     if (e && e.parameter && e.parameter.test) {
       var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
@@ -112,10 +122,9 @@
     return { status: 'saved', entry: entry };
   },
 
-  /* ---------- 操作画面 ---------- */
+  /* ---------- 画面へのデータ提供（GitHub Pagesからfetchされる） ---------- */
 
-  serveUi: function () {
-    var tpl = this.loadSrc('ui', this.SRC_UI);
+  getData: function () {
     var history = this.readJson(this.HISTORY_FILE, []);
     var stores = this.readJson(this.STORES_FILE, {});
 
@@ -124,16 +133,7 @@
       if (h.store && stores[h.store]) memos[h.store] = stores[h.store];
     });
 
-    var historyJson = JSON.stringify(history);
-    var memoJson = JSON.stringify(memos);
-
-    var html = tpl
-      .replace('/*__HISTORY__*/[]', function () { return historyJson; })
-      .replace('/*__MEMOS__*/{}', function () { return memoJson; });
-
-    return HtmlService.createHtmlOutput(html)
-      .setTitle('配達履歴')
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
+    return this.jsonOut({ history: history, memos: memos });
   },
 
   /* ---------- 診断 ---------- */
@@ -310,6 +310,11 @@
   out: function (res) {
     var b64 = Utilities.base64Encode(JSON.stringify(res), Utilities.Charset.UTF_8);
     return ContentService.createTextOutput(b64).setMimeType(ContentService.MimeType.TEXT);
+  },
+
+  jsonOut: function (obj) {
+    return ContentService.createTextOutput(JSON.stringify(obj))
+      .setMimeType(ContentService.MimeType.JSON);
   },
 
   loadSrc: function (key, url) {
