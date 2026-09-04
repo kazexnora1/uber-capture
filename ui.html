@@ -450,7 +450,7 @@ function openEditor() {
         save.disabled = false;
         note.textContent = '保存できませんでした';
       })
-      .apiSaveMemo(d.store, body);
+         .apiCall('saveMemo', [d.store, body]);
   };
 }
 
