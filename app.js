@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-10',
+  VERSION: '2026-09-05-12',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -10,6 +10,8 @@
   HISTORY_FILE: 'history.json',
   STORES_FILE: 'stores.json',
   STOREINFO_FILE: 'storeinfo.json',
+  ELEVATION_FILE: 'elevation.json',
+  PLACES_FILE: 'places.json',
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -102,6 +104,123 @@
 
   /* ---------- 画面から呼ばれる処理 ---------- */
 
+  /**
+   * ピック(店名)からドロップ(住所)までの標高差を調べる。
+   * 店の座標は resolvePlace（Places API）から取り、配達先はGeocoding APIで座標化する。
+   * 組み合わせ（店×配達先）ごとにキャッシュする。配達先は毎回変わるため、
+   * 店メモ/店情報と違って店名だけでは照合しない。
+   */
+  api_elevation: function (store, address) {
+    if (!store || !address) return { status: 'empty' };
+    var key = this.normKey(store) + '||' + this.normKey(address);
+
+    var cache = this.readJson(this.ELEVATION_FILE, {});
+    if (cache[key] != null) {
+      return { status: 'found', diff: cache[key] };
+    }
+    return this.fetchElevation(store, address, key, cache);
+  },
+
+  api_refreshElevation: function (store, address) {
+    if (!store || !address) return { status: 'empty' };
+    var key = this.normKey(store) + '||' + this.normKey(address);
+
+    var cache = this.readJson(this.ELEVATION_FILE, {});
+    delete cache[key];
+    return this.fetchElevation(store, address, key, cache);
+  },
+
+  fetchElevation: function (store, address, key, cache) {
+    var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
+    if (!apiKey) return { status: 'nokey' };
+
+    try {
+      var place = this.resolvePlace(store);
+      if (!place || place.lat == null) return { status: 'geofail', message: '店の場所が特定できませんでした' };
+
+      var drop = this.geocode(address, apiKey);
+      if (!drop) return { status: 'geofail', message: '配達先の場所が特定できませんでした' };
+
+      var url = 'https://maps.googleapis.com/maps/api/elevation/json?locations='
+        + place.lat + ',' + place.lng + '|' + drop.lat + ',' + drop.lng
+        + '&key=' + apiKey;
+
+      var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var body = JSON.parse(resp.getContentText());
+
+      if (body.status !== 'OK' || !body.results || body.results.length < 2) {
+        return { status: 'error', message: body.status || 'unknown' };
+      }
+
+      var diff = Math.round(body.results[1].elevation - body.results[0].elevation);
+      cache[key] = diff;
+      this.writeJson(this.ELEVATION_FILE, cache);
+
+      return { status: 'found', diff: diff };
+    } catch (err) {
+      return { status: 'error', message: String(err) };
+    }
+  },
+
+  /**
+   * 店名からGoogleマップ上の正式な店舗情報（正式名称・住所・座標）を解決する。
+   * Places API (New) の Text Search を使う。店名をキーにキャッシュし、
+   * 高低差の計算とGemini店情報プロンプトの両方から共有して使う。
+   */
+  resolvePlace: function (store) {
+    var key = this.normKey(store);
+    var cache = this.readJson(this.PLACES_FILE, {});
+    if (cache[key]) return cache[key];
+
+    var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
+    if (!apiKey) return null;
+
+    try {
+      var resp = UrlFetchApp.fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: {
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location'
+        },
+        payload: JSON.stringify({
+          textQuery: store,
+          languageCode: 'ja',
+          regionCode: 'JP',
+          maxResultCount: 1
+        }),
+        muteHttpExceptions: true
+      });
+
+      var body = JSON.parse(resp.getContentText());
+      if (!body.places || !body.places.length) return null;
+
+      var pl = body.places[0];
+      var result = {
+        name: (pl.displayName && pl.displayName.text) || store,
+        address: pl.formattedAddress || '',
+        lat: pl.location ? pl.location.latitude : null,
+        lng: pl.location ? pl.location.longitude : null
+      };
+
+      cache[key] = result;
+      this.writeJson(this.PLACES_FILE, cache);
+      return result;
+    } catch (err) {
+      return null;
+    }
+  },
+
+  geocode: function (query, apiKey) {
+    var url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
+      + encodeURIComponent(query) + '&region=jp&key=' + apiKey;
+    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var body = JSON.parse(resp.getContentText());
+    if (body.status !== 'OK' || !body.results || !body.results.length) return null;
+    var loc = body.results[0].geometry.location;
+    return { lat: loc.lat, lng: loc.lng };
+  },
+
   api_saveMemo: function (store, memo) {
     if (!store) return { status: 'error' };
     var key = this.normKey(store);
@@ -159,16 +278,27 @@
     if (!apiKey) return { status: 'nokey' };
 
     try {
+      var place = this.resolvePlace(store);
+      var placeContext = (place && (place.name || place.address))
+        ? ('\nGoogleマップ上の登録情報（参考）: 店名「' + (place.name || '不明') + '」、住所「' + (place.address || '不明') + '」\n')
+        : '';
+
       var prompt = '自転車での商品配達のため、次の店舗の「現地に着いてから迷わないための情報」を'
         + 'Web検索して分かる範囲で日本語で教えてください。\n'
+        + 'この店名はUber Eats上の表示名です。最近はゴーストキッチン（バーチャルブランド）といって、'
+        + '1つの実店舗が複数のUber Eats用ブランド名を掲げて営業していることがよくあります。'
+        + 'そうした情報が見つかれば、実際にその場所で営業している本当の店舗名も教えてください'
+        + '（現地の看板や実際の店構えの目印として重要なため）。\n'
         + '知りたいのは次の項目だけです。営業時間・定休日・電話番号・メニューなど配達と無関係な情報は書かないでください。\n'
+        + '- 実際に営業している店舗名（Uber Eats上の表示名と異なる場合。ゴーストキッチンの母体）\n'
         + '- 建物名（商業施設・ビルの名前）\n'
         + '- 何階にあるか\n'
         + '- 大型施設の場合、複数棟あるならどの棟か\n'
         + '- 入口の場所（正面/裏口/搬入口など、分かれば）\n'
         + '- 駐輪場の場所（大型施設の場合、特に重要）\n'
         + '- 隣接する建物や目印になるもの\n'
-        + '分からない項目は書かず省略してください。分かる項目だけ箇条書きで、5行以内、前置きなしに本文だけ書いてください。\n'
+        + '分からない項目は書かず省略してください。分かる項目だけ箇条書きで、6行以内、前置きなしに本文だけ書いてください。'
+        + placeContext
         + '店名: ' + store;
 
       var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
@@ -262,6 +392,9 @@
 
     var geminiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     lines.push('gemini key: ' + (geminiKey ? 'set' : 'not set'));
+
+    var mapsKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
+    lines.push('maps key: ' + (mapsKey ? 'set' : 'not set'));
 
     return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
   },
