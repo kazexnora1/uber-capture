@@ -284,7 +284,7 @@
         <div class="row">
           <input class="field" id="finderInput" type="text" inputmode="search"
                  placeholder="住所や施設名を入力" autocomplete="off">
-          <button class="btn go" type="submit">マップで開く</button>
+          <button class="btn go" type="submit">自転車ルート</button>
         </div>
       </form>
     </div>
@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-05-03';
+var UI_VERSION = '2026-09-05-04';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -320,7 +320,8 @@ function yen(n) {
 }
 
 function mapsUrl(q) {
-  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
+  return 'https://www.google.com/maps/dir/?api=1&destination='
+    + encodeURIComponent(q) + '&travelmode=bicycling';
 }
 
 function searchUrl(q) {
@@ -416,7 +417,7 @@ function render() {
 
   var pickExtra = '<div class="row">'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
-    +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">マップで開く</a>'
+    +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">自転車ルート</a>'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
     +     esc(searchUrl(d.store)) + '">Googleで検索</a>'
     + '</div>';
@@ -427,7 +428,7 @@ function render() {
 
   var dropExtra = '<div class="row">'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
-    +     esc(mapsUrl(d.address)) + '">マップで開く</a>'
+    +     esc(mapsUrl(d.address)) + '">自転車ルート</a>'
     + '</div>';
   html += stopBlock('drop', 'ドロップ', d.address, dropExtra);
 
