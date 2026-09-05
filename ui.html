@@ -20,6 +20,8 @@
     --pickline: #b9cdea;
     --drop: #fbeeee;
     --dropline: #e3bcbc;
+    --info: #eef7f1;
+    --infoline: #bcdcc7;
   }
 
   * { box-sizing: border-box; }
@@ -179,8 +181,8 @@
     border-color: var(--link);
   }
 
-  /* ---- 店メモ ---- */
-  .memo {
+  /* ---- 店メモ / 店情報（共通の見た目） ---- */
+  .memo, .info-text {
     border-left: 4px solid var(--memoline);
     border-radius: 0 8px 8px 0;
     padding: 8px 10px;
@@ -188,8 +190,9 @@
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
-    background: var(--memo);
   }
+  .memo { background: var(--memo); }
+  .info-text { background: var(--info); border-left-color: var(--infoline); }
 
   .memo-empty { font-size: 14px; color: var(--muted); }
   .memo-time { margin-top: 4px; font-size: 12px; color: var(--muted); }
@@ -293,10 +296,11 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-05-02';
+var UI_VERSION = '2026-09-05-03';
 
 var HISTORY = [];
 var MEMOS = {};
+var INFOS = {};
 
 var RATE_GOOD = 1500;
 var RATE_WARN = 1250;
@@ -418,6 +422,7 @@ function render() {
     + '</div>';
   html += stopBlock('pick', 'ピック', d.store, pickExtra);
 
+  html += '<div class="block" id="infoBlock"></div>';
   html += '<div class="block" id="memoBlock"></div>';
 
   var dropExtra = '<div class="row">'
@@ -466,6 +471,7 @@ function render() {
     btn.onclick = function () { copyText(btn, btn.getAttribute('data-copy')); };
   });
 
+  renderInfo();
   renderMemo();
 }
 
@@ -476,6 +482,65 @@ function go(step) {
   editing = false;
   idx = n;
   render();
+}
+
+/* ---- 店情報（Gemini・Web検索つき、店ごとにキャッシュ） ---- */
+
+function renderInfo() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('infoBlock');
+  if (!el) return;
+
+  var entry = INFOS[d.store];
+
+  if (entry && entry.text) {
+    el.innerHTML = '<div class="label">この店の情報</div>'
+      + '<div class="info-text">' + esc(entry.text) + '</div>'
+      + (entry.updatedAt ? '<div class="memo-time">' + esc(entry.updatedAt) + ' 取得</div>' : '')
+      + '<div class="row" style="margin-top:6px">'
+      +   '<button class="btn plain" id="infoRefresh">調べ直す</button>'
+      + '</div>';
+
+    document.getElementById('infoRefresh').onclick = function () {
+      fetchInfo(d, true);
+    };
+    return;
+  }
+
+  el.innerHTML = '<div class="label">この店の情報</div>'
+    + '<div class="row">'
+    +   '<button class="btn" id="infoFetch">何階か調べる</button>'
+    + '</div>';
+
+  document.getElementById('infoFetch').onclick = function () {
+    fetchInfo(d, false);
+  };
+}
+
+function fetchInfo(d, refresh) {
+  var el = document.getElementById('infoBlock');
+  el.innerHTML = '<div class="label">この店の情報</div><div class="note">調べています…</div>';
+
+  callApi(refresh ? 'refreshStoreInfo' : 'storeInfo', [d.store, d.address])
+    .then(function (r) {
+      if (r && r.status === 'found') {
+        INFOS[d.store] = { text: r.text, updatedAt: r.updatedAt };
+      } else if (r && r.status === 'nokey') {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">Gemini APIキーが未設定です</div>';
+        return;
+      } else if (r && r.status === 'notfound') {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">情報が見つかりませんでした</div>';
+        return;
+      } else {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした: '
+          + esc((r && r.message) || (r && r.status) || '不明なエラー') + '</div>';
+        return;
+      }
+      if (HISTORY[idx] === d) renderInfo();
+    })
+    .catch(function () {
+      el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした（通信エラー）</div>';
+    });
 }
 
 /* ---- 店メモ ---- */
@@ -606,6 +671,7 @@ fetch(API_URL + '?data=1')
   .then(function (data) {
     HISTORY = data.history || [];
     MEMOS = data.memos || {};
+    INFOS = data.infos || {};
     var verbar = document.getElementById('verbar');
     if (verbar) verbar.textContent = 'ui v' + UI_VERSION + ' / app v' + (data.version || '?');
     render();
