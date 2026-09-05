@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-05-04';
+var UI_VERSION = '2026-09-05-05';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -522,7 +522,7 @@ function fetchInfo(d, refresh) {
   var el = document.getElementById('infoBlock');
   el.innerHTML = '<div class="label">この店の情報</div><div class="note">調べています…</div>';
 
-  callApi(refresh ? 'refreshStoreInfo' : 'storeInfo', [d.store, d.address])
+  callApi(refresh ? 'refreshStoreInfo' : 'storeInfo', [d.store])
     .then(function (r) {
       if (r && r.status === 'found') {
         INFOS[d.store] = { text: r.text, updatedAt: r.updatedAt };
