@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-08',
+  VERSION: '2026-09-05-09',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -127,29 +127,31 @@
   /**
    * 店の情報をGemini(Web検索つき)で調べる。店名をキーにキャッシュし、
    * 一度調べた店は次回以降APIを呼ばない。
+   * address(配達先＝お客様の住所)は店の特定に無関係かつ個人情報なので、
+   * 検索クエリには一切含めない。
    */
-  api_storeInfo: function (store, address) {
+  api_storeInfo: function (store) {
     if (!store) return { status: 'empty' };
 
     var cache = this.readJson(this.STOREINFO_FILE, {});
     if (cache[store]) {
       return { status: 'found', text: cache[store].text, updatedAt: cache[store].updatedAt };
     }
-    return this.fetchStoreInfo(store, address, cache);
+    return this.fetchStoreInfo(store, cache);
   },
 
   /**
    * キャッシュを捨てて調べ直す。
    */
-  api_refreshStoreInfo: function (store, address) {
+  api_refreshStoreInfo: function (store) {
     if (!store) return { status: 'empty' };
 
     var cache = this.readJson(this.STOREINFO_FILE, {});
     delete cache[store];
-    return this.fetchStoreInfo(store, address, cache);
+    return this.fetchStoreInfo(store, cache);
   },
 
-  fetchStoreInfo: function (store, address, cache) {
+  fetchStoreInfo: function (store, cache) {
     var key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     if (!key) return { status: 'nokey' };
 
@@ -164,8 +166,7 @@
         + '- 駐輪場の場所（大型施設の場合、特に重要）\n'
         + '- 隣接する建物や目印になるもの\n'
         + '分からない項目は書かず省略してください。分かる項目だけ箇条書きで、5行以内、前置きなしに本文だけ書いてください。\n'
-        + '店名: ' + store + '\n'
-        + '住所: ' + (address || '(不明)');
+        + '店名: ' + store;
 
       var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
         + this.GEMINI_MODEL + ':generateContent?key=' + key;
