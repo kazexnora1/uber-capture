@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-12',
+  VERSION: '2026-09-05-13',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -141,9 +141,9 @@
       var drop = this.geocode(address, apiKey);
       if (!drop) return { status: 'geofail', message: '配達先の場所が特定できませんでした' };
 
+      var locations = place.lat + ',' + place.lng + '|' + drop.lat + ',' + drop.lng;
       var url = 'https://maps.googleapis.com/maps/api/elevation/json?locations='
-        + place.lat + ',' + place.lng + '|' + drop.lat + ',' + drop.lng
-        + '&key=' + apiKey;
+        + encodeURIComponent(locations) + '&key=' + apiKey;
 
       var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
       var body = JSON.parse(resp.getContentText());
