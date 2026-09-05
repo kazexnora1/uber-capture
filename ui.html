@@ -663,6 +663,8 @@ function openEditor() {
   }, { passive: true });
 })();
 
+document.getElementById('uiVer').textContent = UI_VERSION;
+
 /* 起動時にGASからデータを取得 */
 fetch(API_URL + '?data=1')
   .then(function (r) { return r.json(); })
@@ -670,10 +672,14 @@ fetch(API_URL + '?data=1')
     HISTORY = data.history || [];
     MEMOS = data.memos || {};
     INFOS = data.infos || {};
+    var verbar = document.getElementById('verbar');
+    if (verbar) verbar.textContent = 'ui v' + UI_VERSION + ' / app v' + (data.version || '?');
     render();
   })
   .catch(function () {
     card.innerHTML = '<div class="empty">データを取得できませんでした。<br>電波状況を確認するか、時間をおいて開き直してください。</div>';
+    var verbar = document.getElementById('verbar');
+    if (verbar) verbar.textContent = 'ui v' + UI_VERSION + ' / app 取得失敗';
   });
 </script>
 </body>
