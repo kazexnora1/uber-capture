@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-04',
+  VERSION: '2026-09-05-05',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -12,7 +12,7 @@
   STOREINFO_FILE: 'storeinfo.json',
 
   HISTORY_MAX: 20,
-  GEMINI_MODEL: 'gemini-2.5-flash',
+  GEMINI_MODEL: 'gemini-3.6-flash',
 
   /* ---------- 入口（ショートカットからのPOST／画面からのAPI呼び出し） ---------- */
 
