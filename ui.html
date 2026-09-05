@@ -259,6 +259,14 @@
     line-height: 1.6;
   }
 
+  .verbar {
+    margin-top: 8px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    opacity: .7;
+  }
+
   .finder .row { margin-top: 6px; }
   .finder .field { flex: 1 1 auto; min-width: 0; }
 
@@ -281,11 +289,14 @@
       </form>
     </div>
   </div>
+
+  <div class="verbar" id="verbar">ui v<span id="uiVer"></span></div>
 </div>
 
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
+var UI_VERSION = '2026-09-05-01';
 
 var HISTORY = [];
 var MEMOS = {};
