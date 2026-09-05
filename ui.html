@@ -521,7 +521,8 @@ function fetchInfo(d, refresh) {
         el.innerHTML = '<div class="label">この店の情報</div><div class="note">情報が見つかりませんでした</div>';
         return;
       } else {
-        el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした</div>';
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした: '
+          + esc((r && r.message) || (r && r.status) || '不明なエラー') + '</div>';
         return;
       }
       if (HISTORY[idx] === d) renderInfo();
