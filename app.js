@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-03',
+  VERSION: '2026-09-05-04',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -208,13 +208,14 @@
       if (h.store && infoCache[h.store]) infos[h.store] = infoCache[h.store];
     });
 
-    return this.jsonOut({ history: history, memos: memos, infos: infos });
+    return this.jsonOut({ history: history, memos: memos, infos: infos, version: this.VERSION });
   },
 
   /* ---------- 診断 ---------- */
 
   diag: function () {
     var lines = [];
+    lines.push('app.js version: ' + this.VERSION);
 
     try {
       var folder = DriveApp.getFolderById(this.FOLDER_ID);
