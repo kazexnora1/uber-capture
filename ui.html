@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-05-05';
+var UI_VERSION = '2026-09-05-06';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -449,6 +449,8 @@ function render() {
     html += '</div>';
   }
 
+  html += '<div id="elevRow" style="margin-top:8px"></div>';
+
   if (d.imageId) {
     html += '<div class="row" style="margin-top:8px">'
           +   '<a class="btn plain" target="_blank" rel="noopener" href="'
@@ -473,6 +475,7 @@ function render() {
   });
 
   renderInfo();
+  renderElev();
   renderMemo();
 }
 
@@ -483,6 +486,55 @@ function go(step) {
   editing = false;
   idx = n;
   render();
+}
+
+/* ---- 高低差（ピック→ドロップ、配達ごとにキャッシュ） ---- */
+
+function elevText(diff) {
+  return (diff > 0 ? '+' : '') + diff + 'm';
+}
+
+function renderElev() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('elevRow');
+  if (!el) return;
+
+  if (d.elev != null) {
+    showElev(el, d, d.elev);
+    return;
+  }
+
+  el.innerHTML = '<button class="btn plain" id="elevFetch">高低差を調べる</button>';
+  document.getElementById('elevFetch').onclick = function () { fetchElev(d, false); };
+}
+
+function showElev(el, d, diff) {
+  el.innerHTML = '<span class="note">高低差 ' + esc(elevText(diff)) + '</span> '
+    + '<button class="btn plain" id="elevRedo">調べ直す</button>';
+  document.getElementById('elevRedo').onclick = function () { fetchElev(d, true); };
+}
+
+function fetchElev(d, refresh) {
+  var el = document.getElementById('elevRow');
+  el.innerHTML = '<span class="note">調べています…</span>';
+
+  callApi(refresh ? 'refreshElevation' : 'elevation', [d.store, d.address])
+    .then(function (r) {
+      if (r && r.status === 'found') {
+        d.elev = r.diff;
+        if (HISTORY[idx] === d) showElev(el, d, r.diff);
+      } else if (r && r.status === 'nokey') {
+        el.innerHTML = '<span class="note">地図APIキーが未設定です</span>';
+      } else if (r && r.status === 'geofail') {
+        el.innerHTML = '<span class="note">' + esc(r.message || '場所を特定できませんでした') + '</span>';
+      } else {
+        el.innerHTML = '<span class="note">取得できませんでした: '
+          + esc((r && r.message) || (r && r.status) || '不明なエラー') + '</span>';
+      }
+    })
+    .catch(function () {
+      el.innerHTML = '<span class="note">取得できませんでした（通信エラー）</span>';
+    });
 }
 
 /* ---- 店情報（Gemini・Web検索つき、店ごとにキャッシュ） ---- */
