@@ -13,5 +13,6 @@
   { "name": "2026-08-28_reerie", "lines": ["◎ 合計12分（1.4km）", "REÉRIE YOUYI SHANG DIAN", "立川市錦町1丁目13-立川サニーコート立川サニーコート", "承諾"], "expected": { "store": "REÉRIE YOUYI SHANG DIAN", "address": "立川市錦町1丁目13-立川サニーコート立川サニーコート" } },
   { "name": "2026-08-29_asian_bistro", "lines": ["◎合計28分（4.7km）", "アジアンビストロDai 立川グリー", "・ンスプリングス店 AsianBistroDai", "TACHIKAWA GREEN SPRINGS", "0", "昭島市もくせいの杜2丁目", "承諾"], "expected": { "store": "アジアンビストロDai 立川グリー ・ンスプリングス店 AsianBistroDai TACHIKAWA GREEN SPRINGS", "address": "昭島市もくせいの杜2丁目" } },
   { "name": "2026-09-02_kowloon_split", "lines": ["◎合計16分（2.7km）", "香港屋 小平店小平市仲町", "承諾"], "expected": { "store": "香港屋 小平店", "address": "小平市仲町" } },
-  { "name": "2026-09-04_toyoda_comma", "lines": ["◎合計33分（6.4km）", "マクドナルド 豊田店 McDonald's", "TOYODA", "日野市三沢5丁目11-13", "承諾"], "expected": { "store": "マクドナルド 豊田店 McDonald's TOYODA", "address": "日野市三沢5丁目11-13" } }
+  { "name": "2026-09-04_toyoda_comma", "lines": ["◎合計33分（6.4km）", "マクドナルド 豊田店 McDonald's", "TOYODA", "日野市三沢5丁目11-13", "承諾"], "expected": { "store": "マクドナルド 豊田店 McDonald's TOYODA", "address": "日野市三沢5丁目11-13" } },
+  { "name": "2026-09-05_starbucks_noise", "lines": ["◎合計20分（3.3km）", "スターバックス コーヒー 小平天", "*#/", "Starbucks Coffee Kodaira Tenjin", "小平市学園西町3丁目1-TSTグリーンマーシー", "承諾"], "expected": { "store": "スターバックス コーヒー 小平天 Starbucks Coffee Kodaira Tenjin", "address": "小平市学園西町3丁目1-TSTグリーンマーシー" } }
 ]
