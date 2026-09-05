@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-09',
+  VERSION: '2026-09-05-10',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -104,12 +104,13 @@
 
   api_saveMemo: function (store, memo) {
     if (!store) return { status: 'error' };
+    var key = this.normKey(store);
 
     var stores = this.readJson(this.STORES_FILE, {});
     var body = String(memo == null ? '' : memo).trim();
 
     if (!body) {
-      delete stores[store];
+      delete stores[key];
       this.writeJson(this.STORES_FILE, stores);
       return { status: 'deleted' };
     }
@@ -118,7 +119,7 @@
       memo: body,
       updatedAt: this.stamp('yyyy-MM-dd HH:mm')
     };
-    stores[store] = entry;
+    stores[key] = entry;
     this.writeJson(this.STORES_FILE, stores);
 
     return { status: 'saved', entry: entry };
@@ -132,12 +133,13 @@
    */
   api_storeInfo: function (store) {
     if (!store) return { status: 'empty' };
+    var key = this.normKey(store);
 
     var cache = this.readJson(this.STOREINFO_FILE, {});
-    if (cache[store]) {
-      return { status: 'found', text: cache[store].text, updatedAt: cache[store].updatedAt };
+    if (cache[key]) {
+      return { status: 'found', text: cache[key].text, updatedAt: cache[key].updatedAt };
     }
-    return this.fetchStoreInfo(store, cache);
+    return this.fetchStoreInfo(store, key, cache);
   },
 
   /**
@@ -145,15 +147,16 @@
    */
   api_refreshStoreInfo: function (store) {
     if (!store) return { status: 'empty' };
+    var key = this.normKey(store);
 
     var cache = this.readJson(this.STOREINFO_FILE, {});
-    delete cache[store];
-    return this.fetchStoreInfo(store, cache);
+    delete cache[key];
+    return this.fetchStoreInfo(store, key, cache);
   },
 
-  fetchStoreInfo: function (store, cache) {
-    var key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    if (!key) return { status: 'nokey' };
+  fetchStoreInfo: function (store, key, cache) {
+    var apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey) return { status: 'nokey' };
 
     try {
       var prompt = '自転車での商品配達のため、次の店舗の「現地に着いてから迷わないための情報」を'
@@ -169,7 +172,7 @@
         + '店名: ' + store;
 
       var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-        + this.GEMINI_MODEL + ':generateContent?key=' + key;
+        + this.GEMINI_MODEL + ':generateContent?key=' + apiKey;
 
       var resp = UrlFetchApp.fetch(url, {
         method: 'post',
@@ -193,7 +196,7 @@
       if (!text) return { status: 'notfound' };
 
       var entry = { text: text, updatedAt: this.stamp('yyyy-MM-dd HH:mm') };
-      cache[store] = entry;
+      cache[key] = entry;
       this.writeJson(this.STOREINFO_FILE, cache);
 
       return { status: 'found', text: entry.text, updatedAt: entry.updatedAt };
@@ -208,12 +211,15 @@
     var history = this.readJson(this.HISTORY_FILE, []);
     var stores = this.readJson(this.STORES_FILE, {});
     var infoCache = this.readJson(this.STOREINFO_FILE, {});
+    var self = this;
 
     var memos = {};
     var infos = {};
     history.forEach(function (h) {
-      if (h.store && stores[h.store]) memos[h.store] = stores[h.store];
-      if (h.store && infoCache[h.store]) infos[h.store] = infoCache[h.store];
+      if (!h.store) return;
+      var key = self.normKey(h.store);
+      if (stores[key]) memos[h.store] = stores[key];
+      if (infoCache[key]) infos[h.store] = infoCache[key];
     });
 
     return this.jsonOut({ history: history, memos: memos, infos: infos, version: this.VERSION });
@@ -366,6 +372,14 @@
   },
 
   /* ---------- 汎用 ---------- */
+
+  /**
+   * 店名をキャッシュ照合用に正規化する。前後の空白除去、全角スペースの半角化、
+   * 連続する空白の圧縮のみ行う。表示用の店名そのものはどこにも書き換えない。
+   */
+  normKey: function (s) {
+    return String(s || '').trim().replace(/[\u3000\s]+/g, ' ');
+  },
 
   stamp: function (fmt) {
     return Utilities.formatDate(new Date(), 'Asia/Tokyo', fmt);
