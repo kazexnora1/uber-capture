@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-13',
+  VERSION: '2026-09-05-14',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -109,28 +109,46 @@
    * 店の座標は resolvePlace（Places API）から取り、配達先はGeocoding APIで座標化する。
    * 組み合わせ（店×配達先）ごとにキャッシュする。配達先は毎回変わるため、
    * 店メモ/店情報と違って店名だけでは照合しない。
+   *
+   * あわせて、店と配達先の直線距離をOCRが読み取った配達距離(km)と突き合わせる。
+   * 直線距離の方が大幅に大きい場合、Places APIが同名の別店舗（違う市区町村など）を
+   * 誤って掴んでいる可能性が高いので、その旨を返す。
    */
-  api_elevation: function (store, address) {
+  api_elevation: function (store, address, km) {
     if (!store || !address) return { status: 'empty' };
     var key = this.normKey(store) + '||' + this.normKey(address);
 
     var cache = this.readJson(this.ELEVATION_FILE, {});
-    if (cache[key] != null) {
-      return { status: 'found', diff: cache[key] };
+    if (cache[key]) {
+      return this.withSuspicionCheck(cache[key], km);
     }
-    return this.fetchElevation(store, address, key, cache);
+    return this.fetchElevation(store, address, km, key, cache);
   },
 
-  api_refreshElevation: function (store, address) {
+  api_refreshElevation: function (store, address, km) {
     if (!store || !address) return { status: 'empty' };
     var key = this.normKey(store) + '||' + this.normKey(address);
 
     var cache = this.readJson(this.ELEVATION_FILE, {});
     delete cache[key];
-    return this.fetchElevation(store, address, key, cache);
+    return this.fetchElevation(store, address, km, key, cache);
   },
 
-  fetchElevation: function (store, address, key, cache) {
+  withSuspicionCheck: function (entry, km) {
+    var res = {
+      status: 'found',
+      diff: entry.diff,
+      straightKm: entry.straightKm,
+      placeName: entry.placeName,
+      placeAddress: entry.placeAddress
+    };
+    if (km && entry.straightKm != null && entry.straightKm > km * 2.5) {
+      res.suspicious = true;
+    }
+    return res;
+  },
+
+  fetchElevation: function (store, address, km, key, cache) {
     var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
     if (!apiKey) return { status: 'nokey' };
 
@@ -153,13 +171,35 @@
       }
 
       var diff = Math.round(body.results[1].elevation - body.results[0].elevation);
-      cache[key] = diff;
+      var straightKm = Math.round(this.haversineKm(place.lat, place.lng, drop.lat, drop.lng) * 10) / 10;
+
+      var entry = {
+        diff: diff,
+        straightKm: straightKm,
+        placeName: place.name || '',
+        placeAddress: place.address || ''
+      };
+      cache[key] = entry;
       this.writeJson(this.ELEVATION_FILE, cache);
 
-      return { status: 'found', diff: diff };
+      return this.withSuspicionCheck(entry, km);
     } catch (err) {
       return { status: 'error', message: String(err) };
     }
+  },
+
+  /**
+   * 2点間の直線距離(km)。ハーサイン公式。
+   */
+  haversineKm: function (lat1, lng1, lat2, lng2) {
+    var R = 6371;
+    var dLat = (lat2 - lat1) * Math.PI / 180;
+    var dLng = (lng2 - lng1) * Math.PI / 180;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+      + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+      * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
   },
 
   /**
