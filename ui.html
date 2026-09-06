@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-05-06';
+var UI_VERSION = '2026-09-05-07';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -499,8 +499,8 @@ function renderElev() {
   var el = document.getElementById('elevRow');
   if (!el) return;
 
-  if (d.elev != null) {
-    showElev(el, d, d.elev);
+  if (d.elevResult) {
+    showElev(el, d, d.elevResult);
     return;
   }
 
@@ -508,9 +508,23 @@ function renderElev() {
   document.getElementById('elevFetch').onclick = function () { fetchElev(d, false); };
 }
 
-function showElev(el, d, diff) {
-  el.innerHTML = '<span class="note">高低差 ' + esc(elevText(diff)) + '</span> '
+function showElev(el, d, r) {
+  var html = '<span class="note">高低差 ' + esc(elevText(r.diff)) + '</span> '
     + '<button class="btn plain" id="elevRedo">調べ直す</button>';
+
+  if (r.placeName || r.placeAddress) {
+    html += '<div class="note" style="margin-top:4px">確認: ' + esc(r.placeName || '')
+      + (r.placeAddress ? '（' + esc(r.placeAddress) + '）' : '') + '</div>';
+  }
+
+  if (r.suspicious) {
+    html += '<div class="note" style="color:var(--warn);margin-top:4px">'
+      + '⚠ 店の特定がズレている可能性があります'
+      + (r.straightKm != null ? '（直線約' + esc(r.straightKm) + 'km、配達距離約' + esc(d.km) + 'km）' : '')
+      + '</div>';
+  }
+
+  el.innerHTML = html;
   document.getElementById('elevRedo').onclick = function () { fetchElev(d, true); };
 }
 
@@ -518,11 +532,11 @@ function fetchElev(d, refresh) {
   var el = document.getElementById('elevRow');
   el.innerHTML = '<span class="note">調べています…</span>';
 
-  callApi(refresh ? 'refreshElevation' : 'elevation', [d.store, d.address])
+  callApi(refresh ? 'refreshElevation' : 'elevation', [d.store, d.address, d.km])
     .then(function (r) {
       if (r && r.status === 'found') {
-        d.elev = r.diff;
-        if (HISTORY[idx] === d) showElev(el, d, r.diff);
+        d.elevResult = r;
+        if (HISTORY[idx] === d) showElev(el, d, r);
       } else if (r && r.status === 'nokey') {
         el.innerHTML = '<span class="note">地図APIキーが未設定です</span>';
       } else if (r && r.status === 'geofail') {
