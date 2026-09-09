@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-01',
+  VERSION: '2026-09-09-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -12,16 +12,81 @@
     '御蔵島村','八丈町','青ヶ島村','小笠原村'
   ],
 
-  _addressStartIndex: function (s) {
+  /**
+   * 市区町村名が実際の住所の始まりとして妥当かどうかの判定に使う、
+   * マッチ直後の探索窓（この文字数以内に丁目/番地の数字が来るはず）。
+   */
+  _ADDRESS_DIGIT_WINDOW: 10,
+
+  /**
+   * 「東大和市駅前店」のように支店名自体に市区町村名が含まれるケースを
+   * 誤って住所開始と判定しないよう、市区町村名の直後すぐ（_ADDRESS_DIGIT_WINDOW文字以内）に
+   * 数字か「丁目」が続く場合だけを本物の住所開始として扱う。
+   * 文字列中に複数の出現があれば、条件を満たす最初のものを採用する。
+   */
+  /**
+   * 文字列中の市区町村名の出現位置を、出現順に全て返す。
+   */
+  _municipalityCandidates: function (s) {
+    var candidates = [];
     for (var i = 0; i < this._TOKYO_MUNICIPALITIES.length; i++) {
-      var idx = s.indexOf(this._TOKYO_MUNICIPALITIES[i]);
-      if (idx !== -1) return idx;
+      var name = this._TOKYO_MUNICIPALITIES[i];
+      var idx = s.indexOf(name);
+      while (idx !== -1) {
+        candidates.push({ idx: idx, len: name.length });
+        idx = s.indexOf(name, idx + 1);
+      }
+    }
+    candidates.sort(function (a, b) { return a.idx - b.idx; });
+    return candidates;
+  },
+
+  /**
+   * 市区町村名の直後すぐ（_ADDRESS_DIGIT_WINDOW文字以内）に数字か「丁目」「番地」が
+   * 続く出現だけを対象にした、厳しめの住所開始判定。
+   * 「東大和市駅前店」のように支店名自体に市区町村名が含まれるケースを弾くために使う。
+   */
+  _strictAddressIndex: function (s) {
+    var candidates = this._municipalityCandidates(s);
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      var after = s.slice(c.idx + c.len, c.idx + c.len + this._ADDRESS_DIGIT_WINDOW);
+      if (/[0-9０-９]|丁目|番地/.test(after)) return c.idx;
     }
     return -1;
   },
 
-  _looksLikeAddressStart: function (s) {
-    return this._addressStartIndex(s) !== -1;
+  /**
+   * 数字の有無を問わない、最初に見つかった市区町村名の出現位置。
+   * 「日野市日野」「小平市仲町」のように丁目番地が付かない住所もあるため、
+   * 厳しい判定で見つからない場合のフォールバックとして使う。
+   */
+  _looseAddressIndex: function (s) {
+    var candidates = this._municipalityCandidates(s);
+    return candidates.length ? candidates[0].idx : -1;
+  },
+
+  /**
+   * L[from]以降・境界行が来るまでの範囲で、実際に住所が始まる行と位置を1つ選ぶ。
+   * まず全行を厳しい判定（数字が続くもの）でスキャンし、見つかればそれを採用する
+   * （支店名に市区町村名が紛れているだけの行を誤検知しないため）。
+   * どの行にも数字が続く出現が無ければ、緩い判定（最初の出現）で選び直す
+   * （丁目番地の無い住所を持つ店を拾えなくならないようにするため）。
+   */
+  _findAddressStart: function (L, from) {
+    for (var i = from; i < L.length; i++) {
+      var s = L[i];
+      if (this._isBoundary(s)) break;
+      var strict = this._strictAddressIndex(s);
+      if (strict !== -1) return { line: i, idx: strict };
+    }
+    for (var j = from; j < L.length; j++) {
+      var t = L[j];
+      if (this._isBoundary(t)) break;
+      var loose = this._looseAddressIndex(t);
+      if (loose !== -1) return { line: j, idx: loose };
+    }
+    return null;
   },
 
   _isBoundary: function (s) {
@@ -120,17 +185,18 @@
     }
 
     var i = idx + 1;
+    var split = self._findAddressStart(L, i);
+
     var storeParts = [];
     while (i < L.length) {
       var s = L[i];
       if (self._isNoiseInStore(s)) { i++; continue; }
       if (self._isBoundary(s)) break;
-      var addrIdx = self._addressStartIndex(s);
-      if (addrIdx === 0) break;
-      if (addrIdx > 0) {
-        var storePart = s.slice(0, addrIdx).trim();
+      if (split && i === split.line) {
+        if (split.idx === 0) break;
+        var storePart = s.slice(0, split.idx).trim();
         if (storePart) storeParts.push(storePart);
-        L[i] = s.slice(addrIdx);
+        L[i] = s.slice(split.idx);
         break;
       }
       storeParts.push(s);
