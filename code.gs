@@ -1,5 +1,5 @@
 var SRC_BASE = 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/';
-var CACHE_SECONDS = 30;
+var CACHE_SECONDS = 3600;
 
 function loadApp_() {
   var c = CacheService.getScriptCache();
