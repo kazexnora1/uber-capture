@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-05-14',
+  VERSION: '2026-09-09-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -377,7 +377,21 @@
 
   /* ---------- 画面へのデータ提供（GitHub Pagesからfetchされる） ---------- */
 
+  /**
+   * 画面表示用のデータを組み立てる。直近60秒以内に呼ばれていれば、
+   * Driveを読みに行かずキャッシュした結果をそのまま返す。
+   * ショートカット側でキャプチャ後に一度これを裏で叩いておくと、
+   * 実際に画面を開いたときはこのキャッシュがヒットして瞬時に表示できる。
+   * 新しいキャプチャが来た時点でこのキャッシュは appendHistory が
+   * 即座に破棄するので、古いデータが返り続けることはない。
+   */
   getData: function () {
+    var c = CacheService.getScriptCache();
+    var cached = c.get('data');
+    if (cached) {
+      return ContentService.createTextOutput(cached).setMimeType(ContentService.MimeType.JSON);
+    }
+
     var history = this.readJson(this.HISTORY_FILE, []);
     var stores = this.readJson(this.STORES_FILE, {});
     var infoCache = this.readJson(this.STOREINFO_FILE, {});
@@ -392,7 +406,10 @@
       if (infoCache[key]) infos[h.store] = infoCache[key];
     });
 
-    return this.jsonOut({ history: history, memos: memos, infos: infos, version: this.VERSION });
+    var json = JSON.stringify({ history: history, memos: memos, infos: infos, version: this.VERSION });
+    c.put('data', json, 60);
+
+    return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);
   },
 
   /* ---------- 診断 ---------- */
@@ -473,6 +490,7 @@
       });
 
       this.writeJson(this.HISTORY_FILE, history.slice(0, this.HISTORY_MAX));
+      CacheService.getScriptCache().remove('data');
     } catch (err) {
       // 履歴の失敗はメイン処理に影響させない
     }
@@ -558,15 +576,22 @@
     return Utilities.formatDate(new Date(), 'Asia/Tokyo', fmt);
   },
 
+  getFolder: function () {
+    if (!this._folder) {
+      this._folder = DriveApp.getFolderById(this.FOLDER_ID);
+    }
+    return this._folder;
+  },
+
   getFile: function (fileName) {
-    var folder = DriveApp.getFolderById(this.FOLDER_ID);
+    var folder = this.getFolder();
     var files = folder.getFilesByName(fileName);
     return files.hasNext() ? files.next() : folder.createFile(fileName, '', MimeType.PLAIN_TEXT);
   },
 
   readJson: function (fileName, fallback) {
     try {
-      var folder = DriveApp.getFolderById(this.FOLDER_ID);
+      var folder = this.getFolder();
       var files = folder.getFilesByName(fileName);
       if (!files.hasNext()) return fallback;
       var text = files.next().getBlob().getDataAsString();
@@ -596,7 +621,7 @@
     var hit = c.get(key);
     if (hit) return hit;
     var body = UrlFetchApp.fetch(url + '?_=' + Date.now(), { muteHttpExceptions: true }).getContentText();
-    c.put(key, body, 30);
+    c.put(key, body, 3600);
     return body;
   }
 })
