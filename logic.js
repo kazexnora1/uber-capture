@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-09-01',
+  VERSION: '2026-09-12-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -111,7 +111,7 @@
    */
   _isNoiseInStore: function (s) {
     if (this._isNoise(s)) return true;
-    if (/^[ァ-ヶ]{1}$/.test(s)) return true;
+    if (s.length === 1 && /[A-Za-z0-9ぁ-んァ-ヶ一-龠]/.test(s)) return true;
     if (/^[0-9０-９]{1,2}$/.test(s)) return true;
     if (s.length <= 4 && !/[A-Za-z0-9ぁ-んァ-ヶ一-龠]/.test(s)) return true;
     return false;
