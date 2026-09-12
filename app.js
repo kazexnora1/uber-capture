@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-12-02',
+  VERSION: '2026-09-12-03',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -51,22 +51,39 @@
       res.speak = mod.speak(p);
       res.ok = !!(p.store && p.address);
 
-      var duplicate = res.ok && this.isDuplicateOfPrevious(p);
-
-      var img = { name: '', id: '' };
-      if (imageB64 && !duplicate) {
-        img = this.saveImage(imageB64, res.ok);
+      // 重複判定と書き込みは、2つのリクエストがほぼ同時に来ても
+      // お互いを見落とさないよう、ロックで直列化してから行う。
+      var lock = LockService.getScriptLock();
+      var gotLock = false;
+      try {
+        lock.waitLock(10000);
+        gotLock = true;
+      } catch (lockErr) {
+        // ロックが取れなくても捕捉なしで処理は続ける（機能停止よりはまし）
       }
 
-      if (duplicate) {
-        this.appendNote('重複キャプチャをスキップ: ' + (p.store || ''));
-      } else {
-        this.appendLog(res.ok, img.name || '(なし)', text, p);
-      }
+      try {
+        var duplicate = res.ok && this.isDuplicateOfPrevious(p);
 
-      if (res.ok && !duplicate) {
-        this.saveLast(p);
-        this.appendHistory(p, img);
+        var img = { name: '', id: '' };
+        if (imageB64 && !duplicate) {
+          img = this.saveImage(imageB64, res.ok);
+        }
+
+        if (duplicate) {
+          this.appendNote('重複キャプチャをスキップ: ' + (p.store || ''));
+        } else {
+          this.appendLog(res.ok, img.name || '(なし)', text, p);
+        }
+
+        if (res.ok && !duplicate) {
+          this.saveLast(p);
+          this.appendHistory(p, img);
+        }
+      } finally {
+        if (gotLock) {
+          try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+        }
       }
     } catch (err) {
       res.view = 'エラー: ' + err;
