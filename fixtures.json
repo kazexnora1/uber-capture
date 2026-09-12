@@ -16,5 +16,7 @@
   { "name": "2026-09-04_toyoda_comma", "lines": ["◎合計33分（6.4km）", "マクドナルド 豊田店 McDonald's", "TOYODA", "日野市三沢5丁目11-13", "承諾"], "expected": { "store": "マクドナルド 豊田店 McDonald's TOYODA", "address": "日野市三沢5丁目11-13" } },
   { "name": "2026-09-05_starbucks_noise", "lines": ["◎合計20分（3.3km）", "スターバックス コーヒー 小平天", "*#/", "Starbucks Coffee Kodaira Tenjin", "小平市学園西町3丁目1-TSTグリーンマーシー", "承諾"], "expected": { "store": "スターバックス コーヒー 小平天 Starbucks Coffee Kodaira Tenjin", "address": "小平市学園西町3丁目1-TSTグリーンマーシー" } },
   { "name": "2026-09-09_matsuya_branch_name", "lines": ["◎合計+11分（+1.6km）", "松屋 東大和市駅前店 Matsuya", "Higashi Yamatoshi Ekimae", "東大和市向原5丁目サンビーム", "承諾"], "expected": { "store": "松屋 東大和市駅前店 Matsuya Higashi Yamatoshi Ekimae", "address": "東大和市向原5丁目サンビーム" } },
-  { "name": "2026-09-09_lawson_branch_name", "lines": ["◎合計＋14分（+1.6km）", "ローソン LTF東大和市駅前", "東大和市桜が丘3丁目東大和住宅", "4号館", "承諾"], "expected": { "store": "ローソン LTF東大和市駅前", "address": "東大和市桜が丘3丁目東大和住宅4号館" } }
+  { "name": "2026-09-09_lawson_branch_name", "lines": ["◎合計＋14分（+1.6km）", "ローソン LTF東大和市駅前", "東大和市桜が丘3丁目東大和住宅", "4号館", "承諾"], "expected": { "store": "ローソン LTF東大和市駅前", "address": "東大和市桜が丘3丁目東大和住宅4号館" } },
+  { "name": "2026-08-28_kanji_junk_prefix", "lines": ["◎ 合計36分（5.2km）", "口", "コナズ珈琲小平店", "西東京市西原町4丁目3-コンフォート2", "承諾"], "expected": { "store": "コナズ珈琲小平店", "address": "西東京市西原町4丁目3-コンフォート2" } },
+  { "name": "2026-08-31_latin_junk_prefix", "lines": ["◎合計26分（4.8km）", "o", "香港屋 小平店", "小平市上水本町4丁目15-2", "承諾"], "expected": { "store": "香港屋 小平店", "address": "小平市上水本町4丁目15-2" } }
 ]
