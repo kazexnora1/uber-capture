@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-09-02',
+  VERSION: '2026-09-12-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -51,14 +51,20 @@
       res.speak = mod.speak(p);
       res.ok = !!(p.store && p.address);
 
+      var duplicate = res.ok && this.isDuplicateOfPrevious(p);
+
       var img = { name: '', id: '' };
-      if (imageB64) {
+      if (imageB64 && !duplicate) {
         img = this.saveImage(imageB64, res.ok);
       }
 
-      this.appendLog(res.ok, img.name || '(なし)', text, p);
+      if (duplicate) {
+        this.appendNote('重複キャプチャをスキップ: ' + (p.store || ''));
+      } else {
+        this.appendLog(res.ok, img.name || '(なし)', text, p);
+      }
 
-      if (res.ok) {
+      if (res.ok && !duplicate) {
         this.saveLast(p);
         this.appendHistory(p, img);
       }
@@ -67,6 +73,41 @@
       res.speak = 'エラーが発生しました';
     }
     return this.out(res);
+  },
+
+  /**
+   * 直前の履歴と店名・住所・金額が一致し、かつ30分以内なら重複とみなす。
+   * ショートカット側の自動リトライやダブル起動対策。
+   */
+  isDuplicateOfPrevious: function (p) {
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      if (!history.length) return false;
+
+      var last = history[0];
+      if ((last.store || '') !== (p.store || '')) return false;
+      if ((last.address || '') !== (p.address || '')) return false;
+      if ((last.price != null ? last.price : null) !== (p.price != null ? p.price : null)) return false;
+
+      var lastTime = this.parseStamp(last.ts);
+      if (!lastTime) return false;
+
+      var diffMinutes = (Date.now() - lastTime.getTime()) / 60000;
+      return diffMinutes >= 0 && diffMinutes <= 30;
+    } catch (err) {
+      return false;
+    }
+  },
+
+  /**
+   * stamp('yyyy-MM-dd HH:mm') 形式の文字列(Asia/Tokyo)をDateに戻す。
+   */
+  parseStamp: function (s) {
+    var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+    if (!m) return null;
+    var iso = m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':00+09:00';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
   },
 
   doGet: function (e) {
