@@ -227,12 +227,12 @@
   .stats.warn { border-left-color: var(--warn); }
 
   .stat { flex: 1 1 0; }
-  .stat + .stat { padding-left: 8px; }
+  .stat + .stat { padding-left: 6px; }
   .stat .k { font-size: 12px; color: var(--muted); }
   .stat .v {
-    font-size: 25px;
+    font-size: 20px;
     font-weight: 700;
-    letter-spacing: -.02em;
+    letter-spacing: -.03em;
     line-height: 1.15;
     white-space: nowrap;
   }
@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-09-02';
+var UI_VERSION = '2026-09-12-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -400,6 +400,7 @@ function render() {
 
   var d = HISTORY[idx];
   var perKm = (d.price != null && d.km) ? Math.round(d.price / d.km) : null;
+  var perMin = (d.price != null && d.minutes) ? Math.round(d.price / d.minutes) : null;
   var cls = rateClass(d.hourlyRate);
 
   var tags = [];
@@ -437,6 +438,7 @@ function render() {
         +     '<div class="stat"><div class="k">報酬</div><div class="v">' + yen(d.price) + '</div></div>'
         +     '<div class="stat rate"><div class="k">時給換算</div><div class="v">' + yen(d.hourlyRate) + '</div></div>'
         +     '<div class="stat"><div class="k">1kmあたり</div><div class="v">' + yen(perKm) + '</div></div>'
+        +     '<div class="stat"><div class="k">1分あたり</div><div class="v">' + yen(perMin) + '</div></div>'
         +   '</div>'
         +   '<div class="sub">'
         +     (d.minutes != null ? d.minutes + '分' : '—')
