@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-14-01';
+var UI_VERSION = '2026-09-14-02';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -437,6 +437,8 @@ function render() {
     +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">自転車ルート</a>'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
     +     esc(searchUrl(d.store)) + '">Googleで検索</a>'
+    +   '<a class="btn" href="'
+    +     esc(navitimeUrl(displayStoreName(d.store))) + '">ナビタイムで開く</a>'
     + '</div>';
   html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra);
 
@@ -446,6 +448,8 @@ function render() {
   var dropExtra = '<div class="row">'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
     +     esc(mapsUrl(d.address)) + '">自転車ルート</a>'
+    +   '<a class="btn" href="'
+    +     esc(navitimeUrl(d.address)) + '">ナビタイムで開く</a>'
     + '</div>';
   html += stopBlock('drop', 'ドロップ', d.address, dropExtra);
 
