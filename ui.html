@@ -296,7 +296,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-12-01';
+var UI_VERSION = '2026-09-14-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -392,6 +392,15 @@ function stopBlock(kind, label, text, extraHtml) {
     + '</div>';
 }
 
+/* 店名のローマ字部分（かな・漢字を含まない単語）を表示から取り除く。
+   検索・ルート用のURLは元の店名（ローマ字込み）のまま使うので、精度には影響しない。 */
+function displayStoreName(store) {
+  var parts = String(store || '').split(' ').filter(function (w) {
+    return /[ぁ-んァ-ヶ一-龠]/.test(w);
+  });
+  return parts.length ? parts.join(' ') : store;
+}
+
 function render() {
   if (!HISTORY.length) {
     card.innerHTML = '<div class="empty">まだ履歴がありません。<br>配達リクエストをキャプチャすると、ここに残ります。</div>';
@@ -422,7 +431,7 @@ function render() {
     +   '<a class="btn" target="_blank" rel="noopener" href="'
     +     esc(searchUrl(d.store)) + '">Googleで検索</a>'
     + '</div>';
-  html += stopBlock('pick', 'ピック', d.store, pickExtra);
+  html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra);
 
   html += '<div class="block" id="infoBlock"></div>';
   html += '<div class="block" id="memoBlock"></div>';
