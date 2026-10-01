@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-12-03',
+  VERSION: '2026-09-15-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -23,7 +23,9 @@
     try {
       payload = JSON.parse(e.postData.contents);
     } catch (err) {
-      return this.jsonOut({ status: 'error', message: 'bad request' });
+      // ショートカット側は常にBase64形式の応答を前提にデコードするので、
+      // ここでも必ず out() で同じ形式を返す（jsonOutだと形式が食い違って落ちる）。
+      return this.out({ view: 'エラー: リクエストを解析できませんでした', store: '', address: '', speak: 'エラーが発生しました', ok: false });
     }
 
     // 画面（GitHub Pages）から呼ばれるAPI操作
@@ -407,7 +409,8 @@
         contentType: 'application/json',
         payload: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          tools: [{ google_search: {} }]
+          tools: [{ google_search: {} }],
+          generationConfig: { thinkingConfig: { thinkingBudget: 0 } }
         }),
         muteHttpExceptions: true
       });
@@ -419,7 +422,11 @@
       var body = JSON.parse(resp.getContentText());
       var cand = body.candidates && body.candidates[0];
       var parts = cand && cand.content && cand.content.parts;
-      var text = parts && parts.map(function (p) { return p.text || ''; }).join('').trim();
+      // thought:true の部分は内部の思考メモなので、答えの本文からは除外する
+      var text = parts && parts
+        .filter(function (p) { return !p.thought; })
+        .map(function (p) { return p.text || ''; })
+        .join('').trim();
 
       if (!text) return { status: 'notfound' };
 
