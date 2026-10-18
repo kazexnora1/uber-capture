@@ -251,6 +251,24 @@
     border: 1px solid var(--line);
   }
 
+  /* ---- 配達完了の記録 ---- */
+  .done { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .btn.finish {
+    display: block;
+    width: 100%;
+    padding: 13px 12px;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--surface);
+    background: var(--good);
+    border-color: var(--good);
+    border-radius: 10px;
+  }
+  .btn.finish:disabled { opacity: .5; }
+  .done-ok { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; }
+  .done-ok b { color: var(--good); font-size: 16px; }
+  .done .note { margin-top: 4px; }
+
   .empty {
     padding: 32px 20px;
     text-align: center;
@@ -296,7 +314,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-09-14-02';
+var UI_VERSION = '2026-10-18-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -432,6 +450,8 @@ function render() {
         +   '<button id="next" aria-label="1件後">&#8594;</button>'
         + '</div>';
 
+  html += '<div class="done" id="doneBlock"></div>';
+
   var pickExtra = '<div class="row">'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
     +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">自転車ルート</a>'
@@ -496,6 +516,7 @@ function render() {
     btn.onclick = function () { copyText(btn, btn.getAttribute('data-copy')); };
   });
 
+  renderDone();
   renderInfo();
   renderElev();
   renderMemo();
@@ -508,6 +529,78 @@ function go(step) {
   editing = false;
   idx = n;
   render();
+}
+
+/* ---- 配達完了の記録（時刻を残し、受信からの所要時間を出す） ---- */
+
+function parseSec(s) {
+  var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  var t = new Date(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + (m[6] || '00') + '+09:00');
+  return isNaN(t.getTime()) ? null : t;
+}
+
+function hmOf(s) {
+  var m = String(s || '').match(/(\d{2}:\d{2})(?::\d{2})?$/);
+  return m ? m[1] : '';
+}
+
+function renderDone() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('doneBlock');
+  if (!el) return;
+
+  if (!(d.id || d.imageId)) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+
+  if (d.doneAt) {
+    var a = parseSec(d.reqAt || (d.ts + ':00'));
+    var b = parseSec(d.doneAt);
+    var mins = (a && b) ? Math.round((b - a) / 6000) / 10 : null;
+
+    el.innerHTML = '<div class="done-ok"><b>完了 ' + esc(hmOf(d.doneAt)) + '</b>'
+      + (mins != null ? '<span>（受信から' + mins + '分）</span>' : '')
+      + '<button class="btn plain" id="doneUndo" type="button">取り消し</button></div>'
+      + '<div class="note" id="doneNote"></div>';
+    document.getElementById('doneUndo').onclick = function () { sendDone(d, 'undoDone'); };
+    return;
+  }
+
+  el.innerHTML = '<button class="btn finish" id="doneBtn" type="button">配達完了を記録</button>'
+    + '<div class="note" id="doneNote"></div>';
+  document.getElementById('doneBtn').onclick = function () { sendDone(d, 'markDone'); };
+}
+
+function sendDone(d, action) {
+  var btn = document.getElementById('doneBtn') || document.getElementById('doneUndo');
+  var note = document.getElementById('doneNote');
+  if (btn) btn.disabled = true;
+  if (note) note.textContent = '記録しています';
+
+  callApi(action, [d.id || d.imageId])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        d.doneAt = r.doneAt || '';
+        if (!d.reqAt && r.reqAt) d.reqAt = r.reqAt;
+        if (HISTORY[idx] === d) {
+          renderDone();
+          if (r.sheet !== 'ok') {
+            var n = document.getElementById('doneNote');
+            if (n) n.textContent = 'シートには未記録（履歴には記録済み）';
+          }
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        if (note) note.textContent = '記録できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      if (note) note.textContent = '記録できませんでした（通信エラー）';
+    });
 }
 
 /* ---- 高低差（ピック→ドロップ、配達ごとにキャッシュ） ---- */
