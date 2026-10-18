@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-15-01',
+  VERSION: '2026-10-18-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -12,6 +12,11 @@
   STOREINFO_FILE: 'storeinfo.json',
   ELEVATION_FILE: 'elevation.json',
   PLACES_FILE: 'places.json',
+
+  /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
+  SHEET_PROP: 'UBERLOG_SHEET_ID',
+  SHEET_NAME: 'requests',
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -80,7 +85,8 @@
 
         if (res.ok && !duplicate) {
           this.saveLast(p);
-          this.appendHistory(p, img);
+          var entry = this.appendHistory(p, img);
+          if (entry) this.appendSheet(entry);
         }
       } finally {
         if (gotLock) {
@@ -140,6 +146,10 @@
       var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
       mod.fixtures = JSON.parse(this.loadSrc('fixtures', this.SRC_FIXTURES));
       return ContentService.createTextOutput(mod.selfTest())
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
+    if (e && e.parameter && e.parameter.setup) {
+      return ContentService.createTextOutput(this.setupSheet())
         .setMimeType(ContentService.MimeType.TEXT);
     }
     if (e && e.parameter && e.parameter.last) {
@@ -319,6 +329,58 @@
     if (body.status !== 'OK' || !body.results || !body.results.length) return null;
     var loc = body.results[0].geometry.location;
     return { lat: loc.lat, lng: loc.lng };
+  },
+
+  /**
+   * 配達完了の時刻を記録する（履歴のdoneAtと、シートの「完了時刻」列）。
+   * idは履歴のid（古い履歴はimageId）。取り消しは api_undoDone。
+   */
+  api_markDone: function (id) {
+    return this.setDone_(id, this.stamp('yyyy-MM-dd HH:mm:ss'));
+  },
+
+  api_undoDone: function (id) {
+    return this.setDone_(id, '');
+  },
+
+  setDone_: function (id, doneAt) {
+    if (!id) return { status: 'error', message: 'idがありません' };
+
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(10000);
+      got = true;
+    } catch (lockErr) {
+      // ロックが取れなくても続行する
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var hit = null;
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
+      }
+
+      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
+      if (hit) {
+        hit.doneAt = doneAt;
+        this.writeJson(this.HISTORY_FILE, history);
+        CacheService.getScriptCache().remove('data');
+      }
+
+      var sheet = this.setSheetDone_(key, doneAt);
+      return {
+        status: (hit || sheet === 'ok') ? 'ok' : 'notfound',
+        doneAt: doneAt,
+        reqAt: hit ? (hit.reqAt || (hit.ts + ':00')) : '',
+        sheet: sheet
+      };
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
+    }
   },
 
   api_saveMemo: function (store, memo) {
@@ -512,6 +574,13 @@
       lines.push('history.json: NG ' + err);
     }
 
+    try {
+      var shDiag = this.getSheet_(false);
+      lines.push('sheet: ' + (shDiag ? ('OK ' + Math.max(shDiag.getLastRow() - 1, 0) + '行') : '未設定'));
+    } catch (err) {
+      lines.push('sheet: NG ' + err);
+    }
+
     var geminiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     lines.push('gemini key: ' + (geminiKey ? 'set' : 'not set'));
 
@@ -540,8 +609,10 @@
     try {
       var history = this.readJson(this.HISTORY_FILE, []);
 
-      history.unshift({
+      var entry = {
+        id: this.makeId(img),
         ts: this.stamp('yyyy-MM-dd HH:mm'),
+        reqAt: this.stamp('yyyy-MM-dd HH:mm:ss'),
         store: p.store || '',
         address: p.address || '',
         price: p.price != null ? p.price : null,
@@ -551,13 +622,17 @@
         multiplier: p.multiplier != null ? p.multiplier : 1,
         additional: !!p.isAdditional,
         image: (img && img.name) || '',
-        imageId: (img && img.id) || ''
-      });
+        imageId: (img && img.id) || '',
+        doneAt: ''
+      };
+      history.unshift(entry);
 
       this.writeJson(this.HISTORY_FILE, history.slice(0, this.HISTORY_MAX));
       CacheService.getScriptCache().remove('data');
+      return entry;
     } catch (err) {
       // 履歴の失敗はメイン処理に影響させない
+      return null;
     }
   },
 
@@ -624,6 +699,215 @@
       return ContentService.createTextOutput(b64).setMimeType(ContentService.MimeType.TEXT);
     } catch (err) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+  },
+
+  /* ---------- スプレッドシート（全件のマスター） ---------- */
+
+  stemOfImage: function (name) {
+    return String(name || '').replace(/_(ok|fail)\.jpg$/, '');
+  },
+
+  /** 画像ファイル名（秒まで入る）から行のidを作る。画像が無ければ現在時刻から作る */
+  makeId: function (img) {
+    return this.stemOfImage(img && img.name) || this.stamp('yyyyMMdd_HHmmss');
+  },
+
+  /**
+   * シートを返す。create=true のときだけ、無ければ新規作成する（作成は ?setup=1 のときだけ）。
+   * 未設定なら null。
+   */
+  getSheet_: function (create) {
+    var props = PropertiesService.getScriptProperties();
+    var id = props.getProperty(this.SHEET_PROP);
+    if (id) {
+      return SpreadsheetApp.openById(id).getSheetByName(this.SHEET_NAME);
+    }
+    if (!create) return null;
+
+    var ss = SpreadsheetApp.create('UberLog');
+    ss.setSpreadsheetTimeZone('Asia/Tokyo');
+    var sh = ss.getSheets()[0];
+    sh.setName(this.SHEET_NAME);
+    sh.getRange(1, 1, 1, this.SHEET_HEADERS.length)
+      .setValues([this.SHEET_HEADERS]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('B:B').setNumberFormat('yyyy-mm-dd hh:mm:ss');
+    sh.getRange('K:K').setNumberFormat('yyyy-mm-dd hh:mm:ss');
+    props.setProperty(this.SHEET_PROP, ss.getId());
+    try {
+      DriveApp.getFileById(ss.getId()).moveTo(this.getFolder());
+    } catch (err) {
+      // 移動に失敗してもシート自体は使える
+    }
+    return sh;
+  },
+
+  /** 1行分のA〜K列（id〜完了時刻） */
+  entryRow_: function (e) {
+    return [
+      e.id || '',
+      e.reqAt || '',
+      e.store || '',
+      e.address || '',
+      e.price != null ? e.price : '',
+      e.minutes != null ? e.minutes : '',
+      e.km != null ? e.km : '',
+      e.multiplier || 1,
+      e.additional ? '追加' : '',
+      e.hourlyRate != null ? e.hourlyRate : '',
+      e.doneAt || ''
+    ];
+  },
+
+  /**
+   * L列（実所要＝完了−受信）とM列（無音＝この受信−前の完了）の数式。
+   * M列がマイナスなら、前の配達が終わる前に次を受けた（重なり）という意味。
+   */
+  rowFormulas_: function (r) {
+    return [
+      '=IF(OR(B' + r + '="",K' + r + '=""),"",ROUND((K' + r + '-B' + r + ')*1440,1))',
+      r > 2 ? '=IF(OR(K' + (r - 1) + '="",B' + r + '=""),"",ROUND((B' + r + '-K' + (r - 1) + ')*1440,1))' : ''
+    ];
+  },
+
+  appendSheet: function (e) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return false;
+      var r = sh.getLastRow() + 1;
+      sh.getRange(r, 1, 1, 11).setValues([this.entryRow_(e)]);
+      sh.getRange(r, 12, 1, 2).setFormulas([this.rowFormulas_(r)]);
+      sh.getRange(r, 14, 1, 4).setValues([['', '', '', e.image || '']]);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  },
+
+  setSheetDone_: function (key, doneAt) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'none';
+      var last = sh.getLastRow();
+      if (last < 2 || !key) return 'notfound';
+      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
+      if (!f) return 'notfound';
+      sh.getRange(f.getRow(), 11).setValue(doneAt);
+      return 'ok';
+    } catch (err) {
+      return 'error';
+    }
+  },
+
+  /**
+   * log.txt のOCRログを今のlogic.jsで読み直し、重複（同じ店・住所・金額で30分以内）を除いた行にする。
+   * 失敗(FAIL)と、店名か住所が読めなかったものは除く。
+   */
+  parseLogRows_: function () {
+    var self = this;
+    var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
+    var raw = this.getFile(this.LOG_FILE).getBlob().getDataAsString();
+    var blocks = raw.split(/^----------$/m);
+    var rows = [];
+    var usedIds = {};
+
+    blocks.forEach(function (b) {
+      var lines = b.split('\n');
+      var head = null;
+      var start = -1;
+      for (var i = 0; i < lines.length; i++) {
+        var hm = lines[i].match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \[(OK|FAIL)\] image: (.*)$/);
+        if (hm) head = hm;
+        if (lines[i] === '--- OCR行 ---') { start = i; break; }
+      }
+      if (!head || head[2] !== 'OK' || start < 0) return;
+
+      var ocr = [];
+      for (var j = start + 1; j < lines.length; j++) {
+        var m = lines[j].match(/^(\d+): (.*)$/);
+        if (m) ocr.push(m[2]);
+        else if (/^store:/.test(lines[j])) break;
+      }
+
+      var p = mod.parse(ocr.join('\n'));
+      if (!p.store || !p.address) return;
+
+      var ts = head[1];
+      var image = head[3] === '(なし)' ? '' : head[3];
+      var t = self.parseStamp(ts);
+      var tms = t ? t.getTime() : 0;
+
+      var dup = rows.slice(-5).some(function (u) {
+        return u.store === p.store && u.address === p.address && u.price === p.price
+          && Math.abs(tms - u._t) <= 30 * 60000;
+      });
+      if (dup) return;
+
+      var id = image
+        ? self.stemOfImage(image)
+        : ts.slice(0, 10).replace(/-/g, '') + '_' + ts.slice(11, 13) + ts.slice(14, 16) + '00';
+      while (usedIds[id]) id += 'x';
+      usedIds[id] = true;
+
+      rows.push({
+        _t: tms,
+        id: id,
+        reqAt: ts + ':00',
+        store: p.store,
+        address: p.address,
+        price: p.price,
+        minutes: p.minutes,
+        km: p.km,
+        multiplier: p.multiplier,
+        additional: p.isAdditional,
+        hourlyRate: p.hourlyRate,
+        doneAt: '',
+        image: image
+      });
+    });
+    return rows;
+  },
+
+  /**
+   * ?setup=1 で呼ぶ。シートを作り（無ければ）、log.txtの過去分を取り込む。
+   * すでにデータがある場合は何もしない（二重取り込み防止）。
+   */
+  setupSheet: function () {
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(20000);
+      got = true;
+    } catch (lockErr) {
+      // 続行
+    }
+
+    try {
+      var sh = this.getSheet_(true);
+      var url = sh.getParent().getUrl();
+      if (sh.getLastRow() > 1) {
+        return 'すでにデータがあります（' + (sh.getLastRow() - 1) + '行）。取り込みはスキップしました\n' + url;
+      }
+
+      var rows = this.parseLogRows_();
+      if (!rows.length) return 'log.txt から取り込めるデータがありません\n' + url;
+
+      var self = this;
+      var n = rows.length;
+      sh.getRange(2, 1, n, 11).setValues(rows.map(function (r) { return self.entryRow_(r); }));
+      var formulas = [];
+      for (var i = 0; i < n; i++) formulas.push(this.rowFormulas_(i + 2));
+      sh.getRange(2, 12, n, 2).setFormulas(formulas);
+      sh.getRange(2, 14, n, 4).setValues(rows.map(function (r) { return ['', '', '', r.image || '']; }));
+
+      return 'OK: ' + n + '件を取り込みました\n' + url;
+    } catch (err) {
+      return 'NG: ' + err;
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
     }
   },
 
