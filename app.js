@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-18-01',
+  VERSION: '2026-10-19-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -135,7 +135,21 @@
     return isNaN(d.getTime()) ? null : d;
   },
 
+  /**
+   * 'yyyy-MM-dd HH:mm:ss'（秒は省略可、Asia/Tokyo）をDateに戻す。
+   */
+  parseStampSec_: function (s) {
+    var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    var d = new Date(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + (m[6] || '00') + '+09:00');
+    return isNaN(d.getTime()) ? null : d;
+  },
+
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.done) {
+      return ContentService.createTextOutput(this.doneLatest_().message)
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
     if (e && e.parameter && e.parameter.diag) {
       return this.diag();
     }
@@ -337,6 +351,47 @@
    */
   api_markDone: function (id) {
     return this.setDone_(id, this.stamp('yyyy-MM-dd HH:mm:ss'));
+  },
+
+  api_markDoneLatest: function () {
+    return this.doneLatest_();
+  },
+
+  /**
+   * ショートカット用（?done=1）。未完了の配達のうち、直近90分以内で一番古いものを完了にする。
+   * 追加配達などで2件抱えているときは、先に受けた方から完了になる。
+   * 押し忘れて90分以上たったものは対象にしない（画面のボタンで個別に押せる）。
+   */
+  doneLatest_: function () {
+    var history = this.readJson(this.HISTORY_FILE, []);
+    var now = Date.now();
+    var hit = null;
+    for (var i = 0; i < history.length; i++) {
+      var h = history[i];
+      if (h.doneAt) continue;
+      var t = this.parseStampSec_(h.reqAt || (h.ts + ':00'));
+      if (!t) continue;
+      var age = now - t.getTime();
+      if (age > 90 * 60000 || age < -60000) continue;
+      hit = h; // 履歴は新しい順なので、最後に当たったものが一番古い
+    }
+    if (!hit) {
+      return { status: 'none', message: '未完了の配達が見つかりません（90分以内）' };
+    }
+
+    var r = this.setDone_(hit.id || hit.imageId, this.stamp('yyyy-MM-dd HH:mm:ss'));
+    if (r.status !== 'ok') {
+      return { status: 'error', message: '記録できませんでした: ' + (r.message || r.status) };
+    }
+
+    var a = this.parseStampSec_(r.reqAt);
+    var b = this.parseStampSec_(r.doneAt);
+    var mins = (a && b) ? Math.round((b - a) / 6000) / 10 : null;
+    var msg = '完了 ' + r.doneAt.slice(11, 16)
+      + (mins != null ? '（受信から' + mins + '分）' : '')
+      + ' ' + String(hit.store || '').split(' ')[0];
+    if (r.sheet !== 'ok') msg += '\n※シートには未記録';
+    return { status: 'ok', message: msg, doneAt: r.doneAt, store: hit.store };
   },
 
   api_undoDone: function (id) {
