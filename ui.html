@@ -175,6 +175,8 @@
     padding: 7px 4px;
   }
 
+  .btn.danger { color: var(--warn); }
+
   .btn.go {
     color: var(--surface);
     background: var(--link);
@@ -314,7 +316,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-18-01';
+var UI_VERSION = '2026-10-19-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -493,10 +495,13 @@ function render() {
 
   html += '<div id="elevRow" style="margin-top:8px"></div>';
 
-  if (d.imageId) {
-    html += '<div class="row" style="margin-top:8px">'
-          +   '<a class="btn plain" target="_blank" rel="noopener" href="'
-          +     'https://drive.google.com/file/d/' + esc(d.imageId) + '/view">キャプチャを開く</a>'
+  if (d.imageId || d.id) {
+    html += '<div class="row" style="margin-top:8px;justify-content:space-between">'
+          + (d.imageId
+              ? '<a class="btn plain" target="_blank" rel="noopener" href="'
+                + 'https://drive.google.com/file/d/' + esc(d.imageId) + '/view">キャプチャを開く</a>'
+              : '<span></span>')
+          + '<button class="btn plain danger" id="delBtn" type="button">この記録を削除</button>'
           + '</div>';
   }
 
@@ -520,6 +525,40 @@ function render() {
   renderInfo();
   renderElev();
   renderMemo();
+
+  var delBtn = document.getElementById('delBtn');
+  if (delBtn) delBtn.onclick = function () { deleteEntry(d); };
+}
+
+/* ---- 無効な記録の削除（履歴とシートの両方から消える。元に戻せない） ---- */
+
+function deleteEntry(d) {
+  var label = shortTs(d.ts) + ' ' + displayStoreName(d.store);
+  if (!confirm('この記録を削除しますか？\n' + label + '\n\n履歴とシートから消えます。元には戻せません。')) return;
+
+  var btn = document.getElementById('delBtn');
+  if (btn) btn.disabled = true;
+
+  callApi('deleteEntry', [d.id || d.imageId])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        var i = HISTORY.indexOf(d);
+        if (i >= 0) HISTORY.splice(i, 1);
+        if (idx >= HISTORY.length) idx = Math.max(HISTORY.length - 1, 0);
+        editing = false;
+        render();
+        if (r.sheet === 'none' || r.sheet === 'error') {
+          alert('履歴から削除しました。シートには反映できていません（シートの行は手で消してください）。');
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        alert('削除できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー'));
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      alert('削除できませんでした（通信エラー）');
+    });
 }
 
 function go(step) {
