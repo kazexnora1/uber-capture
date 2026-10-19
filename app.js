@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-19-01',
+  VERSION: '2026-10-19-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -351,6 +351,44 @@
    */
   api_markDone: function (id) {
     return this.setDone_(id, this.stamp('yyyy-MM-dd HH:mm:ss'));
+  },
+
+  /**
+   * 無効な記録（読み取りミス・テスト・キャンセルなど）を、履歴とシートから消す。
+   * 元に戻せない。log.txt（生のOCRログ）とドライブの画像は残す。
+   */
+  api_deleteEntry: function (id) {
+    if (!id) return { status: 'error', message: 'idがありません' };
+
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(10000);
+      got = true;
+    } catch (lockErr) {
+      // ロックが取れなくても続行する
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var at = -1;
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].id === id || history[i].imageId === id) { at = i; break; }
+      }
+      if (at < 0) return { status: 'notfound' };
+
+      var hit = history[at];
+      var key = hit.id || this.stemOfImage(hit.image);
+      history.splice(at, 1);
+      this.writeJson(this.HISTORY_FILE, history);
+      CacheService.getScriptCache().remove('data');
+
+      return { status: 'ok', sheet: this.deleteSheetRow_(key) };
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
+    }
   },
 
   api_markDoneLatest: function () {
@@ -849,6 +887,34 @@
       var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
       if (!f) return 'notfound';
       sh.getRange(f.getRow(), 11).setValue(doneAt);
+      return 'ok';
+    } catch (err) {
+      return 'error';
+    }
+  },
+
+  /**
+   * シートの該当行を削除する。
+   * 削除した行を参照していた次の行の「無音」数式が #REF! になるので、張り直す。
+   */
+  deleteSheetRow_: function (key) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'none';
+      var last = sh.getLastRow();
+      if (last < 2 || !key) return 'notfound';
+      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
+      if (!f) return 'notfound';
+
+      var row = f.getRow();
+      if (row < 2) return 'notfound';
+      sh.deleteRow(row);
+
+      if (row <= sh.getLastRow()) {
+        var cell = sh.getRange(row, 13);
+        if (row > 2) cell.setFormula(this.rowFormulas_(row)[1]);
+        else cell.clearContent();
+      }
       return 'ok';
     } catch (err) {
       return 'error';
