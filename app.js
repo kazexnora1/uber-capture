@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-20-01',
+  VERSION: '2026-10-20-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -16,7 +16,7 @@
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
   SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)'],
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -708,6 +708,7 @@
 
       var entry = {
         id: this.makeId(img),
+        headId: p.isAdditional ? this.findHeadId_(history, Date.now()) : '',
         ts: this.stamp('yyyy-MM-dd HH:mm'),
         reqAt: this.stamp('yyyy-MM-dd HH:mm:ss'),
         store: p.store || '',
@@ -801,6 +802,23 @@
 
   /* ---------- スプレッドシート（全件のマスター） ---------- */
 
+  /**
+   * 追加配達の記録が「どの記録に足されたか」を返す。履歴は新しい順。
+   * 直前の「追加ではない」記録が90分以内ならそのid、そうでなければ ''。
+   */
+  findHeadId_: function (history, nowMs) {
+    for (var i = 0; i < history.length; i++) {
+      var h = history[i];
+      if (h.additional) continue;
+      var t = this.parseStampSec_(h.reqAt || (h.ts + ':00'));
+      if (t && nowMs - t.getTime() <= 90 * 60000) {
+        return h.id || this.stemOfImage(h.image) || '';
+      }
+      return '';
+    }
+    return '';
+  },
+
   stemOfImage: function (name) {
     return String(name || '').replace(/_(ok|fail)\.jpg$/, '');
   },
@@ -883,6 +901,7 @@
       sh.getRange(r, 12, 1, 2).setFormulas([[f[0], f[1]]]);
       sh.getRange(r, 14, 1, 4).setValues([['', '', '', e.image || '']]);
       sh.getRange(r, 20).setFormula(f[2]);
+      sh.getRange(r, 21).setValue(e.headId || '');
       return true;
     } catch (err) {
       return false;
@@ -982,8 +1001,18 @@
       while (usedIds[id]) id += 'x';
       usedIds[id] = true;
 
+      var headId = '';
+      if (p.isAdditional) {
+        for (var q = rows.length - 1; q >= 0; q--) {
+          if (rows[q].additional) continue;
+          if (tms - rows[q]._t >= 0 && tms - rows[q]._t <= 90 * 60000) headId = rows[q].id;
+          break;
+        }
+      }
+
       rows.push({
         _t: tms,
+        headId: headId,
         id: id,
         reqAt: ts + ':00',
         store: p.store,
@@ -1024,6 +1053,28 @@
         }
         sh.getRange(2, 12, n, 2).setFormulas(lm);
         sh.getRange(2, 20, n, 1).setFormulas(t);
+
+        // 追加配達の行に「どの記録に足されたか」を入れる（A:id, B:受信時刻, I:追加配達）
+        var vals = sh.getRange(2, 1, n, 9).getValues();
+        var heads = [];
+        var lastHead = null;
+        for (var j = 0; j < n; j++) {
+          var id = String(vals[j][0]);
+          var b = vals[j][1];
+          var bt = (b instanceof Date) ? b.getTime() : NaN;
+          if (isNaN(bt)) {
+            var pd = this.parseStampSec_(String(b));
+            bt = pd ? pd.getTime() : NaN;
+          }
+          if (String(vals[j][8]) === '追加') {
+            var ok = lastHead && bt >= lastHead.t && bt - lastHead.t <= 90 * 60000;
+            heads.push([ok ? lastHead.id : '']);
+          } else {
+            heads.push(['']);
+            lastHead = { id: id, t: bt };
+          }
+        }
+        sh.getRange(2, 21, n, 1).setValues(heads);
       }
       return 'OK: ' + Math.max(last - 1, 0) + '行の数式を更新しました';
     } catch (err) {
@@ -1136,6 +1187,7 @@
       }
       sh.getRange(2, 12, n, 2).setFormulas(formulas);
       sh.getRange(2, 20, n, 1).setFormulas(tFormulas);
+      sh.getRange(2, 21, n, 1).setValues(rows.map(function (r) { return [r.headId || '']; }));
       sh.getRange(2, 14, n, 4).setValues(rows.map(function (r) { return ['', '', '', r.image || '']; }));
 
       return 'OK: ' + n + '件を取り込みました\n' + url;
