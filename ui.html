@@ -271,6 +271,19 @@
   .done-ok b { color: var(--good); font-size: 16px; }
   .done .note { margin-top: 4px; }
 
+  /* ---- 実績の入力（Uberの売り上げ状況を見て） ---- */
+  .act-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .act-row input {
+    width: 62px;
+    padding: 9px 8px;
+    font-size: 16px; /* 16px未満だとiPhoneで入力時に拡大される */
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .act-row .unit { color: var(--muted); font-size: 14px; }
+
   .empty {
     padding: 32px 20px;
     text-align: center;
@@ -316,7 +329,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-19-01';
+var UI_VERSION = '2026-10-20-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -495,6 +508,8 @@ function render() {
 
   html += '<div id="elevRow" style="margin-top:8px"></div>';
 
+  html += '<div id="actualBlock" style="margin-top:12px"></div>';
+
   if (d.imageId || d.id) {
     html += '<div class="row" style="margin-top:8px;justify-content:space-between">'
           + (d.imageId
@@ -522,12 +537,96 @@ function render() {
   });
 
   renderDone();
+  renderActual();
   renderInfo();
   renderElev();
   renderMemo();
 
   var delBtn = document.getElementById('delBtn');
   if (delBtn) delBtn.onclick = function () { deleteEntry(d); };
+}
+
+/* ---- 実績の入力（Uberの売り上げ状況に出る所要時間・距離を、見ながら手で入れる） ---- */
+
+function renderActual() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('actualBlock');
+  if (!el) return;
+
+  var key = d.id || d.imageId;
+  if (!key) { el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  var has = d.actualMin != null && d.actualMin !== '';
+  var mm = '', ss = '';
+  if (has) {
+    var total = Math.round(d.actualMin * 60);
+    mm = Math.floor(total / 60);
+    ss = total % 60;
+  }
+  var km = (d.actualKm != null && d.actualKm !== '') ? d.actualKm : '';
+
+  var diff = '';
+  if (has) {
+    var dm = Math.round((d.actualMin - (d.minutes || 0)) * 10) / 10;
+    diff = '提示' + (d.minutes != null ? d.minutes + '分' : '—') + ' → 実績' + (Math.round(d.actualMin * 10) / 10) + '分（'
+         + (dm >= 0 ? '+' : '') + dm + '分）';
+    if (d.actualKm != null && d.actualKm !== '' && d.km != null) {
+      var dk = Math.round((d.actualKm - d.km) * 100) / 100;
+      diff += '、' + d.actualKm + 'km（' + (dk >= 0 ? '+' : '') + dk + 'km）';
+    }
+  }
+
+  el.innerHTML = '<div class="label">実績（Uberの売り上げ状況を見て入力）</div>'
+    + '<div class="act-row">'
+    +   '<input id="actMin" type="number" inputmode="numeric" min="0" placeholder="分" value="' + esc(String(mm)) + '">'
+    +   '<span class="unit">分</span>'
+    +   '<input id="actSec" type="number" inputmode="numeric" min="0" max="59" placeholder="秒" value="' + esc(String(ss)) + '">'
+    +   '<span class="unit">秒</span>'
+    +   '<input id="actKm" type="number" inputmode="decimal" step="0.01" min="0" placeholder="km" value="' + esc(String(km)) + '">'
+    +   '<span class="unit">km</span>'
+    +   '<button class="btn" id="actSave" type="button">' + (has ? '更新' : '保存') + '</button>'
+    + '</div>'
+    + '<div class="note" id="actNote">' + esc(diff) + '</div>';
+
+  document.getElementById('actSave').onclick = function () { saveActual(d); };
+}
+
+function saveActual(d) {
+  var min = document.getElementById('actMin').value;
+  var sec = document.getElementById('actSec').value;
+  var km = document.getElementById('actKm').value;
+  var note = document.getElementById('actNote');
+  var btn = document.getElementById('actSave');
+
+  if (min === '') {
+    if (note) note.textContent = '分を入れてください';
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (note) note.textContent = '保存しています';
+
+  callApi('saveActual', [d.id || d.imageId, min, sec, km])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        d.actualMin = r.actualMin;
+        d.actualKm = r.actualKm;
+        if (HISTORY[idx] === d) {
+          renderActual();
+          if (r.sheet !== 'ok') {
+            var n = document.getElementById('actNote');
+            if (n) n.textContent += '（シートには未反映）';
+          }
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        if (note) note.textContent = '保存できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      if (note) note.textContent = '保存できませんでした（通信エラー）';
+    });
 }
 
 /* ---- 無効な記録の削除（履歴とシートの両方から消える。元に戻せない） ---- */
