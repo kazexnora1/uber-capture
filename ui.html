@@ -329,7 +329,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-20-01';
+var UI_VERSION = '2026-10-20-02';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -548,6 +548,38 @@ function render() {
 
 /* ---- 実績の入力（Uberの売り上げ状況に出る所要時間・距離を、見ながら手で入れる） ---- */
 
+/* 追加配達は、Uberの数字が「足された先の記録」と合算で出る。実績は、足された先の記録に入れる */
+
+function entryTime(e) {
+  return parseSec(e.reqAt || (e.ts + ':00'));
+}
+
+/** 追加配達 i が足された先（直前の「追加ではない」記録、90分以内）の番号。無ければ -1 */
+function headIndexOf(i) {
+  var e = HISTORY[i];
+  if (!e || !e.additional) return -1;
+  var t = entryTime(e);
+  for (var j = i + 1; j < HISTORY.length; j++) {
+    if (HISTORY[j].additional) continue;
+    var tj = entryTime(HISTORY[j]);
+    return (t && tj && t >= tj && (t - tj) <= 90 * 60000) ? j : -1;
+  }
+  return -1;
+}
+
+/** 記録 i に足された追加配達の番号（新しい順）。無ければ空 */
+function followerIndexesOf(i) {
+  var out = [];
+  for (var j = 0; j < i; j++) {
+    if (headIndexOf(j) === i) out.push(j);
+  }
+  return out;
+}
+
+function yen(n) {
+  return Math.round(n).toLocaleString('ja-JP') + '円';
+}
+
 function renderActual() {
   var d = HISTORY[idx];
   var el = document.getElementById('actualBlock');
@@ -556,6 +588,42 @@ function renderActual() {
   var key = d.id || d.imageId;
   if (!key) { el.style.display = 'none'; return; }
   el.style.display = '';
+
+  // ---- 追加配達：実績は、足された先の記録に入れる ----
+  if (d.additional) {
+    var h = headIndexOf(idx);
+    if (h >= 0) {
+      var head = HISTORY[h];
+      var done = (head.actualMin != null && head.actualMin !== '')
+        ? '合算の実績：' + (Math.round(head.actualMin * 10) / 10) + '分' + (head.actualKm != null && head.actualKm !== '' ? '・' + head.actualKm + 'km' : '') + '（入力済み）'
+        : 'まだ入力されていません';
+      el.innerHTML = '<div class="label">実績</div>'
+        + '<div class="note">追加配達です。Uberの所要時間・距離・報酬は、足された先の記録（'
+        + esc(shortTs(head.ts) + ' ' + displayStoreName(head.store)) + '）と合算で出ます。実績は、そちらの記録に入れてください。</div>'
+        + '<div class="note" style="margin-top:4px">' + esc(done) + '</div>'
+        + '<div class="row" style="margin-top:6px"><button class="btn" id="goHead" type="button">足された先の記録を開く</button></div>';
+      document.getElementById('goHead').onclick = function () {
+        idx = h;
+        editing = false;
+        render();
+      };
+      return;
+    }
+  }
+
+  // ---- ふつうの記録（追加配達が足されていれば、合算で比べる） ----
+  var fol = followerIndexesOf(idx);
+  var qPrice = d.price || 0;
+  var qMin = d.minutes || 0;
+  var qKm = d.km || 0;
+  var folLines = [];
+  fol.forEach(function (j) {
+    var f = HISTORY[j];
+    qPrice += f.price || 0;
+    qMin += f.minutes || 0;
+    qKm += f.km || 0;
+    folLines.push('+' + yen(f.price || 0) + '（' + shortTs(f.ts) + ' ' + displayStoreName(f.store) + '）');
+  });
 
   var has = d.actualMin != null && d.actualMin !== '';
   var mm = '', ss = '';
@@ -566,18 +634,25 @@ function renderActual() {
   }
   var km = (d.actualKm != null && d.actualKm !== '') ? d.actualKm : '';
 
+  var info = '';
+  if (fol.length) {
+    info = '<div class="note" style="margin-bottom:6px">追加配達あり ' + esc(folLines.join(' ')) + '。Uberの数字は合算です（報酬 '
+      + esc(yen(qPrice)) + '）。</div>';
+  }
+
   var diff = '';
   if (has) {
-    var dm = Math.round((d.actualMin - (d.minutes || 0)) * 10) / 10;
-    diff = '提示' + (d.minutes != null ? d.minutes + '分' : '—') + ' → 実績' + (Math.round(d.actualMin * 10) / 10) + '分（'
-         + (dm >= 0 ? '+' : '') + dm + '分）';
-    if (d.actualKm != null && d.actualKm !== '' && d.km != null) {
-      var dk = Math.round((d.actualKm - d.km) * 100) / 100;
+    var dm = Math.round((d.actualMin - qMin) * 10) / 10;
+    diff = (fol.length ? '合算で ' : '') + '提示' + (qMin ? Math.round(qMin) + '分' : '—') + ' → 実績'
+         + (Math.round(d.actualMin * 10) / 10) + '分（' + (dm >= 0 ? '+' : '') + dm + '分）';
+    if (d.actualKm != null && d.actualKm !== '' && qKm) {
+      var dk = Math.round((d.actualKm - qKm) * 100) / 100;
       diff += '、' + d.actualKm + 'km（' + (dk >= 0 ? '+' : '') + dk + 'km）';
     }
   }
 
   el.innerHTML = '<div class="label">実績（Uberの売り上げ状況を見て入力）</div>'
+    + info
     + '<div class="act-row">'
     +   '<input id="actMin" type="number" inputmode="numeric" min="0" placeholder="分" value="' + esc(String(mm)) + '">'
     +   '<span class="unit">分</span>'
