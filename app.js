@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-19-02',
+  VERSION: '2026-10-20-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -16,7 +16,7 @@
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
   SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名'],
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -146,6 +146,10 @@
   },
 
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.migrate) {
+      return ContentService.createTextOutput(this.migrateSheet())
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
     if (e && e.parameter && e.parameter.done) {
       return ContentService.createTextOutput(this.doneLatest_().message)
         .setMimeType(ContentService.MimeType.TEXT);
@@ -827,6 +831,7 @@
     sh.setFrozenRows(1);
     sh.getRange('B:B').setNumberFormat('yyyy-mm-dd hh:mm:ss');
     sh.getRange('K:K').setNumberFormat('yyyy-mm-dd hh:mm:ss');
+    sh.getRange('T:T').setNumberFormat('yyyy-mm-dd hh:mm:ss');
     props.setProperty(this.SHEET_PROP, ss.getId());
     try {
       DriveApp.getFileById(ss.getId()).moveTo(this.getFolder());
@@ -859,8 +864,12 @@
    */
   rowFormulas_: function (r) {
     return [
-      '=IF(OR(B' + r + '="",K' + r + '=""),"",ROUND((K' + r + '-B' + r + ')*1440,1))',
-      r > 2 ? '=IF(OR(K' + (r - 1) + '="",B' + r + '=""),"",ROUND((B' + r + '-K' + (r - 1) + ')*1440,1))' : ''
+      // [0] L 実所要(分)：Uberの実績(R)があればそれ。なければ完了ボタンの時刻(K)から
+      '=IF(R' + r + '<>"",R' + r + ',IF(OR(B' + r + '="",K' + r + '=""),"",ROUND((K' + r + '-B' + r + ')*1440,1)))',
+      // [1] M 無音(分)：前の行の完了(T)から、この受信までの分。マイナスなら重なっている
+      r > 2 ? '=IF(OR(T' + (r - 1) + '="",B' + r + '=""),"",ROUND((B' + r + '-T' + (r - 1) + ')*1440,1))' : '',
+      // [2] T 完了：ボタンの時刻(K)があればそれ。なければ 受信＋実績分(R) で推定
+      '=IF(K' + r + '<>"",K' + r + ',IF(OR(R' + r + '="",B' + r + '=""),"",B' + r + '+R' + r + '/1440))'
     ];
   },
 
@@ -870,8 +879,10 @@
       if (!sh) return false;
       var r = sh.getLastRow() + 1;
       sh.getRange(r, 1, 1, 11).setValues([this.entryRow_(e)]);
-      sh.getRange(r, 12, 1, 2).setFormulas([this.rowFormulas_(r)]);
+      var f = this.rowFormulas_(r);
+      sh.getRange(r, 12, 1, 2).setFormulas([[f[0], f[1]]]);
       sh.getRange(r, 14, 1, 4).setValues([['', '', '', e.image || '']]);
+      sh.getRange(r, 20).setFormula(f[2]);
       return true;
     } catch (err) {
       return false;
@@ -991,6 +1002,105 @@
   },
 
   /**
+   * ?migrate=1 で呼ぶ。既存シートに、実績分・実績km・完了(確定/推定)の列を足し、
+   * 実所要・無音の数式を新しい式に張り替える。何度呼んでも同じ結果になる。
+   */
+  migrateSheet: function () {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'シートが未設定です（先に ?setup=1 を開いてください）';
+      var last = sh.getLastRow();
+      sh.getRange(1, 1, 1, this.SHEET_HEADERS.length)
+        .setValues([this.SHEET_HEADERS]).setFontWeight('bold');
+      sh.getRange('T:T').setNumberFormat('yyyy-mm-dd hh:mm:ss');
+      if (last >= 2) {
+        var n = last - 1;
+        var lm = [];
+        var t = [];
+        for (var i = 0; i < n; i++) {
+          var f = this.rowFormulas_(i + 2);
+          lm.push([f[0], f[1]]);
+          t.push([f[2]]);
+        }
+        sh.getRange(2, 12, n, 2).setFormulas(lm);
+        sh.getRange(2, 20, n, 1).setFormulas(t);
+      }
+      return 'OK: ' + Math.max(last - 1, 0) + '行の数式を更新しました';
+    } catch (err) {
+      return 'NG: ' + err;
+    }
+  },
+
+  setSheetActual_: function (key, actualMin, actualKm) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'none';
+      var last = sh.getLastRow();
+      if (last < 2 || !key) return 'notfound';
+      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
+      if (!f) return 'notfound';
+      sh.getRange(f.getRow(), 18, 1, 2).setValues([[actualMin, actualKm === null ? '' : actualKm]]);
+      return 'ok';
+    } catch (err) {
+      return 'error';
+    }
+  },
+
+  /**
+   * Uberの売り上げ状況を見て、実際にかかった時間（分・秒）と距離を手で入れる。
+   * 履歴のactualMin/actualKmと、シートの「実績分」「実績km」列に入る。
+   */
+  api_saveActual: function (id, min, sec, km) {
+    if (!id) return { status: 'error', message: 'idがありません' };
+
+    var m = Number(min);
+    var s = (sec === '' || sec == null) ? 0 : Number(sec);
+    var k = (km === '' || km == null) ? null : Number(km);
+    if (!isFinite(m) || m < 0 || !isFinite(s) || s < 0 || s >= 60) {
+      return { status: 'error', message: '分と秒を数字で入れてください（秒は0〜59）' };
+    }
+    if (k !== null && (!isFinite(k) || k < 0)) {
+      return { status: 'error', message: 'kmを数字で入れてください' };
+    }
+    var actualMin = Math.round((m * 60 + s) / 0.6) / 100; // 0.01分単位（秒まで復元できる）
+
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(10000);
+      got = true;
+    } catch (lockErr) {
+      // 続行
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var hit = null;
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
+      }
+      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
+      if (hit) {
+        hit.actualMin = actualMin;
+        hit.actualKm = k;
+        this.writeJson(this.HISTORY_FILE, history);
+        CacheService.getScriptCache().remove('data');
+      }
+      var sheet = this.setSheetActual_(key, actualMin, k);
+      return {
+        status: (hit || sheet === 'ok') ? 'ok' : 'notfound',
+        actualMin: actualMin,
+        actualKm: k,
+        sheet: sheet
+      };
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
+    }
+  },
+
+  /**
    * ?setup=1 で呼ぶ。シートを作り（無ければ）、log.txtの過去分を取り込む。
    * すでにデータがある場合は何もしない（二重取り込み防止）。
    */
@@ -1018,8 +1128,14 @@
       var n = rows.length;
       sh.getRange(2, 1, n, 11).setValues(rows.map(function (r) { return self.entryRow_(r); }));
       var formulas = [];
-      for (var i = 0; i < n; i++) formulas.push(this.rowFormulas_(i + 2));
+      var tFormulas = [];
+      for (var i = 0; i < n; i++) {
+        var ff = this.rowFormulas_(i + 2);
+        formulas.push([ff[0], ff[1]]);
+        tFormulas.push([ff[2]]);
+      }
       sh.getRange(2, 12, n, 2).setFormulas(formulas);
+      sh.getRange(2, 20, n, 1).setFormulas(tFormulas);
       sh.getRange(2, 14, n, 4).setValues(rows.map(function (r) { return ['', '', '', r.image || '']; }));
 
       return 'OK: ' + n + '件を取り込みました\n' + url;
