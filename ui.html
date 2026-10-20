@@ -271,6 +271,10 @@
   .done-ok b { color: var(--good); font-size: 16px; }
   .done .note { margin-top: 4px; }
 
+  /* ---- 案件の種別（買い物代行） ---- */
+  .kind { display: flex; align-items: center; gap: 10px; font-size: 15px; padding: 4px 0; }
+  .kind input { width: 22px; height: 22px; margin: 0; }
+
   /* ---- 実績の入力（Uberの売り上げ状況を見て） ---- */
   .act-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .act-row input {
@@ -329,7 +333,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-20-02';
+var UI_VERSION = '2026-10-21-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -508,7 +512,8 @@ function render() {
 
   html += '<div id="elevRow" style="margin-top:8px"></div>';
 
-  html += '<div id="actualBlock" style="margin-top:12px"></div>';
+  html += '<div id="kindBlock" style="margin-top:12px"></div>';
+  html += '<div id="actualBlock" style="margin-top:8px"></div>';
 
   if (d.imageId || d.id) {
     html += '<div class="row" style="margin-top:8px;justify-content:space-between">'
@@ -537,6 +542,7 @@ function render() {
   });
 
   renderDone();
+  renderKind();
   renderActual();
   renderInfo();
   renderElev();
@@ -547,6 +553,45 @@ function render() {
 }
 
 /* ---- 実績の入力（Uberの売り上げ状況に出る所要時間・距離を、見ながら手で入れる） ---- */
+
+/* ---- 案件の種別（買い物代行は、時間のかかり方が違うので分けて記録する） ---- */
+
+function renderKind() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('kindBlock');
+  if (!el) return;
+
+  var key = d.id || d.imageId;
+  if (!key) { el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  el.innerHTML = '<label class="kind"><input type="checkbox" id="kindShop"' + (d.kind === '買い物代行' ? ' checked' : '') + '>'
+    + '<span>買い物代行（店内で品物を選んで購入）</span></label>'
+    + '<div class="note" id="kindNote"></div>';
+
+  document.getElementById('kindShop').onchange = function () {
+    var box = this;
+    var want = box.checked ? '買い物代行' : '';
+    var note = document.getElementById('kindNote');
+    box.disabled = true;
+    callApi('setKind', [key, want])
+      .then(function (r) {
+        box.disabled = false;
+        if (r && r.status === 'ok') {
+          d.kind = r.kind;
+          if (note) note.textContent = (r.sheet === 'ok' || r.sheet === 'notfound') ? '' : '（シートには未反映）';
+        } else {
+          box.checked = !box.checked;
+          if (note) note.textContent = '保存できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+        }
+      })
+      .catch(function () {
+        box.disabled = false;
+        box.checked = !box.checked;
+        if (note) note.textContent = '保存できませんでした（通信エラー）';
+      });
+  };
+}
 
 /* 追加配達は、Uberの数字が「足された先の記録」と合算で出る。実績は、足された先の記録に入れる */
 
