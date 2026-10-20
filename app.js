@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-20-02',
+  VERSION: '2026-10-21-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -16,7 +16,7 @@
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
   SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id'],
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -1082,6 +1082,22 @@
     }
   },
 
+  /** idで行を探して、指定の列（1始まり）に値を入れる。結果は 'ok' / 'none' / 'notfound' / 'error' */
+  setSheetCell_: function (key, col, value) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'none';
+      var last = sh.getLastRow();
+      if (last < 2 || !key) return 'notfound';
+      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
+      if (!f) return 'notfound';
+      sh.getRange(f.getRow(), col).setValue(value);
+      return 'ok';
+    } catch (err) {
+      return 'error';
+    }
+  },
+
   setSheetActual_: function (key, actualMin, actualKm) {
     try {
       var sh = this.getSheet_(false);
@@ -1101,6 +1117,44 @@
    * Uberの売り上げ状況を見て、実際にかかった時間（分・秒）と距離を手で入れる。
    * 履歴のactualMin/actualKmと、シートの「実績分」「実績km」列に入る。
    */
+  /**
+   * 案件の種別を付ける。いまは「買い物代行」（店内で品物を選んで購入するタイプ）だけ。
+   * 空文字で解除。履歴のkindと、シートの「種別」列（V列）に入る。
+   */
+  api_setKind: function (id, kind) {
+    if (!id) return { status: 'error', message: 'idがありません' };
+    var k = (kind === '買い物代行') ? '買い物代行' : '';
+
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(10000);
+      got = true;
+    } catch (lockErr) {
+      // 続行
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var hit = null;
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
+      }
+      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
+      if (hit) {
+        hit.kind = k;
+        this.writeJson(this.HISTORY_FILE, history);
+        CacheService.getScriptCache().remove('data');
+      }
+      var sheet = this.setSheetCell_(key, 22, k);
+      return { status: (hit || sheet === 'ok') ? 'ok' : 'notfound', kind: k, sheet: sheet };
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
+    }
+  },
+
   api_saveActual: function (id, min, sec, km) {
     if (!id) return { status: 'error', message: 'idがありません' };
 
