@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-21-01',
+  VERSION: '2026-10-21-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -16,7 +16,7 @@
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
   SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別'],
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別', '品目数', '点数'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -146,6 +146,10 @@
   },
 
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.reclass) {
+      return ContentService.createTextOutput(this.reclassSheet())
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
     if (e && e.parameter && e.parameter.migrate) {
       return ContentService.createTextOutput(this.migrateSheet())
         .setMimeType(ContentService.MimeType.TEXT);
@@ -709,6 +713,9 @@
       var entry = {
         id: this.makeId(img),
         headId: p.isAdditional ? this.findHeadId_(history, Date.now()) : '',
+        kind: p.kind || '',
+        itemTypes: p.itemTypes != null ? p.itemTypes : null,
+        itemCount: p.itemCount != null ? p.itemCount : null,
         ts: this.stamp('yyyy-MM-dd HH:mm'),
         reqAt: this.stamp('yyyy-MM-dd HH:mm:ss'),
         store: p.store || '',
@@ -902,6 +909,7 @@
       sh.getRange(r, 14, 1, 4).setValues([['', '', '', e.image || '']]);
       sh.getRange(r, 20).setFormula(f[2]);
       sh.getRange(r, 21).setValue(e.headId || '');
+      sh.getRange(r, 22, 1, 3).setValues([[e.kind || '', e.itemTypes != null ? e.itemTypes : '', e.itemCount != null ? e.itemCount : '']]);
       return true;
     } catch (err) {
       return false;
@@ -1013,6 +1021,9 @@
       rows.push({
         _t: tms,
         headId: headId,
+        kind: p.kind || '',
+        itemTypes: p.itemTypes != null ? p.itemTypes : null,
+        itemCount: p.itemCount != null ? p.itemCount : null,
         id: id,
         reqAt: ts + ':00',
         store: p.store,
@@ -1083,6 +1094,62 @@
   },
 
   /** idで行を探して、指定の列（1始まり）に値を入れる。結果は 'ok' / 'none' / 'notfound' / 'error' */
+  /**
+   * ?reclass=1 で呼ぶ。log.txt のOCRログを読み直して、過去の記録に
+   * 種別（買い物代行）・品目数・点数を付ける。履歴（直近20件）にも付ける。
+   * 手でチェックを入れた「買い物代行」は消さない。何度呼んでも同じ結果になる。
+   */
+  reclassSheet: function () {
+    try {
+      var rows = this.parseLogRows_();
+      var byId = {};
+      rows.forEach(function (r) { byId[r.id] = r; });
+
+      var msg = [];
+
+      var sh = this.getSheet_(false);
+      if (sh && sh.getLastRow() >= 2) {
+        var n = sh.getLastRow() - 1;
+        var ids = sh.getRange(2, 1, n, 1).getValues();
+        var cur = sh.getRange(2, 22, n, 3).getValues();
+        var changed = 0;
+        for (var i = 0; i < n; i++) {
+          var r = byId[String(ids[i][0])];
+          if (!r) continue;
+          if (r.kind === '買い物代行' && cur[i][0] !== '買い物代行') {
+            cur[i][0] = '買い物代行';
+            changed++;
+          }
+          if (r.itemTypes != null) {
+            cur[i][1] = r.itemTypes;
+            cur[i][2] = r.itemCount;
+          }
+        }
+        sh.getRange(2, 22, n, 3).setValues(cur);
+        msg.push('シート: ' + changed + '件を買い物代行に分類しました');
+      } else {
+        msg.push('シート: 未設定のためスキップ');
+      }
+
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var hc = 0;
+      for (var j = 0; j < history.length; j++) {
+        var h = history[j];
+        var hr = byId[h.id || this.stemOfImage(h.image)];
+        if (!hr) continue;
+        if (hr.kind === '買い物代行' && h.kind !== '買い物代行') { h.kind = '買い物代行'; hc++; }
+        if (hr.itemTypes != null) { h.itemTypes = hr.itemTypes; h.itemCount = hr.itemCount; }
+      }
+      this.writeJson(this.HISTORY_FILE, history);
+      CacheService.getScriptCache().remove('data');
+      msg.push('履歴: ' + hc + '件');
+
+      return 'OK\n' + msg.join('\n');
+    } catch (err) {
+      return 'NG: ' + err;
+    }
+  },
+
   setSheetCell_: function (key, col, value) {
     try {
       var sh = this.getSheet_(false);
@@ -1242,6 +1309,7 @@
       sh.getRange(2, 12, n, 2).setFormulas(formulas);
       sh.getRange(2, 20, n, 1).setFormulas(tFormulas);
       sh.getRange(2, 21, n, 1).setValues(rows.map(function (r) { return [r.headId || '']; }));
+      sh.getRange(2, 22, n, 3).setValues(rows.map(function (r) { return [r.kind || '', r.itemTypes != null ? r.itemTypes : '', r.itemCount != null ? r.itemCount : '']; }));
       sh.getRange(2, 14, n, 4).setValues(rows.map(function (r) { return ['', '', '', r.image || '']; }));
 
       return 'OK: ' + n + '件を取り込みました\n' + url;
