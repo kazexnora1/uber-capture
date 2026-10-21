@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-09-12-01',
+  VERSION: '2026-10-21-01',
 
   _TOKYO_MUNICIPALITIES: [
     '千代田区','中央区','港区','新宿区','文京区','台東区','墨田区','江東区','品川区','目黒区',
@@ -152,6 +152,26 @@
     return parts.length ? parts.join(' ') : store;
   },
 
+  /**
+   * 「ピック・パック・ペイ」（買い物代行）かどうかと、品物の数（N種の商品（計M点））。
+   * OCRが「1. ピック・パック・ペイ」「T. ピック…」のように崩れても拾えるよう、前後は見ない。
+   */
+  _extractShopping: function (L) {
+    var isShopping = false;
+    var types = null;
+    var count = null;
+    for (var i = 0; i < L.length; i++) {
+      if (/ピック[・･.\s]*パック[・･.\s]*ペイ/.test(L[i])) isShopping = true;
+      var m = L[i].match(/(\d+)\s*種の商品[（(]\s*計\s*(\d+)\s*点/);
+      if (m && types === null) {
+        types = parseInt(m[1], 10);
+        count = parseInt(m[2], 10);
+        isShopping = true;
+      }
+    }
+    return { isShopping: isShopping, itemTypes: types, itemCount: count };
+  },
+
   parse: function (text) {
     var L = text.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
     return this._parseLines(L);
@@ -169,6 +189,7 @@
     var km = idx >= 0 ? self._extractKm(L[idx]) : null;
     var multiplier = self._extractMultiplier(L);
     var hourlyRate = (priceInfo && minutes) ? Math.round(priceInfo.value / minutes * 60) : null;
+    var shop = self._extractShopping(L);
 
     var base = {
       lines: L,
@@ -177,7 +198,10 @@
       minutes: minutes,
       km: km,
       multiplier: multiplier,
-      hourlyRate: hourlyRate
+      hourlyRate: hourlyRate,
+      kind: shop.isShopping ? '買い物代行' : '',
+      itemTypes: shop.itemTypes,
+      itemCount: shop.itemCount
     };
 
     if (idx < 0) {
@@ -220,7 +244,8 @@
     if (!p.store || !p.address) {
       return '⚠️ 解析失敗 (v' + this.VERSION + ')\n' + p.lines.map(function (s, i) { return i + ': ' + s; }).join('\n');
     }
-    var extra = (p.hourlyRate ? ' 時給約' + p.hourlyRate + '円' : '') + (p.multiplier > 1 ? ' x' + p.multiplier : '') + (p.isAdditional ? ' [追加]' : '');
+    var extra = (p.hourlyRate ? ' 時給約' + p.hourlyRate + '円' : '') + (p.multiplier > 1 ? ' x' + p.multiplier : '') + (p.isAdditional ? ' [追加]' : '')
+      + (p.kind === '買い物代行' ? ' [買い物代行' + (p.itemTypes ? ' ' + p.itemTypes + '種' + p.itemCount + '点' : '') + ']' : '');
     return '🏪 ' + p.store + '\n📍 ' + p.address + extra + '\n(v' + this.VERSION + ')';
   },
 
