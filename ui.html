@@ -271,6 +271,36 @@
   .done-ok b { color: var(--good); font-size: 16px; }
   .done .note { margin-top: 4px; }
 
+  /* ---- 下の入力パネル（ピック店名・配達完了・種別・実績・左右移動） ---- */
+  .dock { margin-top: 8px; }
+  .dock .block { padding: 8px 12px; }
+  .dock-pick {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 12px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .dock-pick .tagpick {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--link);
+    background: var(--pick);
+    border: 1px solid var(--pickline);
+    border-radius: 6px;
+    padding: 1px 6px;
+  }
+  .dock-pick .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 17px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dock .nav { border-bottom: 0; border-top: 1px solid var(--line); }
+
   /* ---- 案件の種別（買い物代行） ---- */
   .kind { display: flex; align-items: center; gap: 10px; font-size: 15px; padding: 4px 0; }
   .kind input { width: 22px; height: 22px; margin: 0; }
@@ -327,13 +357,27 @@
     </div>
   </div>
 
+  <div class="card dock" id="dock" hidden>
+    <div class="dock-pick" id="dPick"></div>
+    <div class="done" id="doneBlock"></div>
+    <div class="block">
+      <div id="kindBlock"></div>
+      <div id="actualBlock" style="margin-top:8px"></div>
+    </div>
+    <div class="nav">
+      <button id="dPrev" aria-label="1件前">&#8592;</button>
+      <div class="stamp" id="dStamp"></div>
+      <button id="dNext" aria-label="1件後">&#8594;</button>
+    </div>
+  </div>
+
   <div class="verbar" id="verbar">ui v<span id="uiVer"></span></div>
 </div>
 
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-21-02';
+var UI_VERSION = '2026-10-22-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -448,6 +492,8 @@ function displayStoreName(store) {
 function render() {
   if (!HISTORY.length) {
     card.innerHTML = '<div class="empty">まだ履歴がありません。<br>配達リクエストをキャプチャすると、ここに残ります。</div>';
+    var dk = document.getElementById('dock');
+    if (dk) dk.hidden = true;
     return;
   }
 
@@ -468,8 +514,6 @@ function render() {
         +     (idx + 1) + ' / ' + HISTORY.length + '</div>'
         +   '<button id="next" aria-label="1件後">&#8594;</button>'
         + '</div>';
-
-  html += '<div class="done" id="doneBlock"></div>';
 
   var pickExtra = '<div class="row">'
     +   '<a class="btn" target="_blank" rel="noopener" href="'
@@ -512,9 +556,6 @@ function render() {
 
   html += '<div id="elevRow" style="margin-top:8px"></div>';
 
-  html += '<div id="kindBlock" style="margin-top:12px"></div>';
-  html += '<div id="actualBlock" style="margin-top:8px"></div>';
-
   if (d.imageId || d.id) {
     html += '<div class="row" style="margin-top:8px;justify-content:space-between">'
           + (d.imageId
@@ -534,8 +575,10 @@ function render() {
   var next = document.getElementById('next');
   prev.disabled = (idx >= HISTORY.length - 1);
   next.disabled = (idx <= 0);
-  prev.onclick = function () { go(1); };
-  next.onclick = function () { go(-1); };
+  prev.onclick = function () { go(1, 'top'); };
+  next.onclick = function () { go(-1, 'top'); };
+
+  renderDock();
 
   card.querySelectorAll('.copy').forEach(function (btn) {
     btn.onclick = function () { copyText(btn, btn.getAttribute('data-copy')); };
@@ -653,6 +696,7 @@ function renderActual() {
         idx = h;
         editing = false;
         render();
+        alignScroll('bottom');
       };
       return;
     }
@@ -782,13 +826,54 @@ function deleteEntry(d) {
     });
 }
 
-function go(step) {
+function go(step, align) {
   if (editing && !confirm('編集中のメモを破棄して移動しますか？')) return;
   var n = idx + step;
   if (n < 0 || n >= HISTORY.length) return;
   editing = false;
   idx = n;
   render();
+  alignScroll(align);
+}
+
+/* ---- 下のパネル：移動したあとも、パネルが同じ高さに来るようにスクロールを揃える ---- */
+
+var stickBottomUntil = 0;
+
+function alignScroll(align) {
+  if (align === 'bottom') {
+    stickBottomUntil = Date.now() + 1500; // 店情報などが後から読み込まれて高さが変わっても、下に揃え直す
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  } else if (align === 'top') {
+    stickBottomUntil = 0;
+    window.scrollTo(0, 0);
+  }
+}
+
+if (window.ResizeObserver) {
+  new ResizeObserver(function () {
+    if (Date.now() < stickBottomUntil) window.scrollTo(0, document.documentElement.scrollHeight);
+  }).observe(document.querySelector('.wrap'));
+}
+
+function renderDock() {
+  var dock = document.getElementById('dock');
+  if (!dock) return;
+  if (!HISTORY.length) { dock.hidden = true; return; }
+  dock.hidden = false;
+
+  var d = HISTORY[idx];
+  document.getElementById('dPick').innerHTML =
+    '<span class="tagpick">ピック</span><span class="name">' + esc(displayStoreName(d.store)) + '</span>';
+  document.getElementById('dStamp').innerHTML =
+    '<b>' + esc(shortTs(d.ts)) + '</b>' + (idx + 1) + ' / ' + HISTORY.length;
+
+  var p = document.getElementById('dPrev');
+  var n = document.getElementById('dNext');
+  p.disabled = (idx >= HISTORY.length - 1);
+  n.disabled = (idx <= 0);
+  p.onclick = function () { go(1, 'bottom'); };
+  n.onclick = function () { go(-1, 'bottom'); };
 }
 
 /* ---- 配達完了の記録（時刻を残し、受信からの所要時間を出す） ---- */
