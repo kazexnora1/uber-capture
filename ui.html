@@ -333,7 +333,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-21-01';
+var UI_VERSION = '2026-10-21-02';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -567,7 +567,7 @@ function renderKind() {
 
   el.innerHTML = '<label class="kind"><input type="checkbox" id="kindShop"' + (d.kind === '買い物代行' ? ' checked' : '') + '>'
     + '<span>買い物代行（店内で品物を選んで購入）</span></label>'
-    + '<div class="note" id="kindNote"></div>';
+    + '<div class="note" id="kindNote">' + (d.itemTypes ? esc('品物 ' + d.itemTypes + '種・' + d.itemCount + '点') : '') + '</div>';
 
   document.getElementById('kindShop').onchange = function () {
     var box = this;
@@ -579,7 +579,9 @@ function renderKind() {
         box.disabled = false;
         if (r && r.status === 'ok') {
           d.kind = r.kind;
-          if (note) note.textContent = (r.sheet === 'ok' || r.sheet === 'notfound') ? '' : '（シートには未反映）';
+          if (note) note.textContent = (r.sheet === 'ok' || r.sheet === 'notfound')
+            ? (d.itemTypes ? '品物 ' + d.itemTypes + '種・' + d.itemCount + '点' : '')
+            : '（シートには未反映）';
         } else {
           box.checked = !box.checked;
           if (note) note.textContent = '保存できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
