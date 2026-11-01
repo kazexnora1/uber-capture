@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-22-02',
+  VERSION: '2026-10-22-03',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -962,7 +962,12 @@
 
       var place = this.geoCached_(hit.store) || this.resolvePlace(hit.store);
       if (!place || place.lat == null) {
-        return { status: 'error', message: '店の場所が見つかりませんでした' };
+        // 見つからない店は「不明」と覚えて、画面を開くたびにやり直さない
+        hit.geoFail = true;
+        this.writeJson(this.HISTORY_FILE, history);
+        CacheService.getScriptCache().remove('data');
+        this.setSheetGeo_(hit.id || this.stemOfImage(hit.image), { storeLat: '', storeLng: '', pickupKm: '不明' });
+        return { status: 'error', message: '店の場所が見つかりませんでした', unresolved: true };
       }
 
       this.applyGeo_(hit, place);
