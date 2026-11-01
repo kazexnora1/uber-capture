@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-22-01',
+  VERSION: '2026-10-22-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -915,6 +915,67 @@
       CacheService.getScriptCache().remove('data');
     }
     return out;
+  },
+
+  /** シートの該当行の「店lat・店lng・店まで直線」（AA〜AC列）を書き換える */
+  setSheetGeo_: function (key, e) {
+    try {
+      var sh = this.getSheet_(false);
+      if (!sh) return 'none';
+      var last = sh.getLastRow();
+      if (last < 2 || !key) return 'notfound';
+      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
+      if (!f) return 'notfound';
+      sh.getRange(f.getRow(), 27, 1, 3).setValues([[e.storeLat, e.storeLng, e.pickupKm]]);
+      return 'ok';
+    } catch (err) {
+      return 'error';
+    }
+  },
+
+  /**
+   * 画面の「直線距離を出す」ボタン用。この記録の、店までの直線距離をその場で計算する。
+   * 店の座標がキャッシュに無ければ Places API で調べる（数秒かかることがある）。
+   */
+  api_geoNow: function (id) {
+    if (!id) return { status: 'error', message: 'idがありません' };
+
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(10000);
+      got = true;
+    } catch (lockErr) {
+      // 続行
+    }
+
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      var hit = null;
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
+      }
+      if (!hit) return { status: 'notfound' };
+      if (hit.lat == null || hit.lng == null) {
+        return { status: 'error', message: 'この記録には、受信時の位置がありません' };
+      }
+
+      var place = this.geoCached_(hit.store) || this.resolvePlace(hit.store);
+      if (!place || place.lat == null) {
+        return { status: 'error', message: '店の場所が見つかりませんでした' };
+      }
+
+      this.applyGeo_(hit, place);
+      this.writeJson(this.HISTORY_FILE, history);
+      CacheService.getScriptCache().remove('data');
+
+      var sheet = this.setSheetGeo_(hit.id || this.stemOfImage(hit.image), hit);
+      return { status: 'ok', pickupKm: hit.pickupKm, sheet: sheet };
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
+    }
   },
 
   /** ?geo=1：未計算の店までの直線距離を、まとめて埋める（1回40店まで。残りがあればもう一度開く） */
