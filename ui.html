@@ -1,1527 +1,1215 @@
-({
-  VERSION: '2026-10-22-01',
-
-  SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
-  SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
-
-  FOLDER_ID: '1dGJeT9UA8BG0aCVWJd8lUxDBz1fyw0VJ',
-  LOG_FILE: 'log.txt',
-  LAST_FILE: 'last.json',
-  HISTORY_FILE: 'history.json',
-  STORES_FILE: 'stores.json',
-  STOREINFO_FILE: 'storeinfo.json',
-  ELEVATION_FILE: 'elevation.json',
-  PLACES_FILE: 'places.json',
-
-  /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
-  SHEET_PROP: 'UBERLOG_SHEET_ID',
-  SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別', '品目数', '点数', '受信lat', '受信lng', '店lat', '店lng', '店まで直線(km)'],
-
-  HISTORY_MAX: 20,
-  GEMINI_MODEL: 'gemini-3.6-flash',
-
-  /* ---------- 入口（ショートカットからのPOST／画面からのAPI呼び出し） ---------- */
-
-  doPost: function (e) {
-    var payload;
-    try {
-      payload = JSON.parse(e.postData.contents);
-    } catch (err) {
-      // ショートカット側は常にBase64形式の応答を前提にデコードするので、
-      // ここでも必ず out() で同じ形式を返す（jsonOutだと形式が食い違って落ちる）。
-      return this.out({ view: 'エラー: リクエストを解析できませんでした', store: '', address: '', speak: 'エラーが発生しました', ok: false });
-    }
-
-    // 画面（GitHub Pages）から呼ばれるAPI操作
-    if (payload.action) {
-      return this.jsonOut(this.api(payload.action, payload.args || []));
-    }
-
-    // 以下は従来通り、ショートカットからのキャプチャ処理
-    var res = { view: '', store: '', address: '', speak: '', ok: false };
-    try {
-      if (payload.note) {
-        res.view = this.appendNote(payload.note) ? 'メモ記録しました' : 'メモ記録失敗';
-        return this.out(res);
-      }
-
-      var text = payload.text || '';
-      var imageB64 = payload.image || '';
-      var geo = this.readGeo_(payload);
-
-      var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
-      var p = mod.parse(text) || {};
-
-      res.store = p.store || '';
-      res.address = p.address || '';
-      res.view = mod.view(p);
-      res.speak = mod.speak(p);
-      res.ok = !!(p.store && p.address);
-
-      // 重複判定と書き込みは、2つのリクエストがほぼ同時に来ても
-      // お互いを見落とさないよう、ロックで直列化してから行う。
-      var lock = LockService.getScriptLock();
-      var gotLock = false;
-      try {
-        lock.waitLock(10000);
-        gotLock = true;
-      } catch (lockErr) {
-        // ロックが取れなくても捕捉なしで処理は続ける（機能停止よりはまし）
-      }
-
-      try {
-        var duplicate = res.ok && this.isDuplicateOfPrevious(p);
-
-        var img = { name: '', id: '' };
-        if (imageB64 && !duplicate) {
-          img = this.saveImage(imageB64, res.ok);
-        }
-
-        if (duplicate) {
-          this.appendNote('重複キャプチャをスキップ: ' + (p.store || ''));
-        } else {
-          this.appendLog(res.ok, img.name || '(なし)', text, p);
-        }
-
-        if (res.ok && !duplicate) {
-          this.saveLast(p);
-          var entry = this.appendHistory(p, img, geo);
-          if (entry) this.appendSheet(entry);
-        }
-      } finally {
-        if (gotLock) {
-          try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-        }
-      }
-    } catch (err) {
-      res.view = 'エラー: ' + err;
-      res.speak = 'エラーが発生しました';
-    }
-    return this.out(res);
-  },
-
-  /**
-   * 直前の履歴と店名・住所・金額が一致し、かつ30分以内なら重複とみなす。
-   * ショートカット側の自動リトライやダブル起動対策。
-   */
-  isDuplicateOfPrevious: function (p) {
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-      if (!history.length) return false;
-
-      var last = history[0];
-      if ((last.store || '') !== (p.store || '')) return false;
-      if ((last.address || '') !== (p.address || '')) return false;
-      if ((last.price != null ? last.price : null) !== (p.price != null ? p.price : null)) return false;
-
-      var lastTime = this.parseStamp(last.ts);
-      if (!lastTime) return false;
-
-      var diffMinutes = (Date.now() - lastTime.getTime()) / 60000;
-      return diffMinutes >= 0 && diffMinutes <= 30;
-    } catch (err) {
-      return false;
-    }
-  },
-
-  /**
-   * stamp('yyyy-MM-dd HH:mm') 形式の文字列(Asia/Tokyo)をDateに戻す。
-   */
-  parseStamp: function (s) {
-    var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
-    if (!m) return null;
-    var iso = m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':00+09:00';
-    var d = new Date(iso);
-    return isNaN(d.getTime()) ? null : d;
-  },
-
-  /**
-   * 'yyyy-MM-dd HH:mm:ss'（秒は省略可、Asia/Tokyo）をDateに戻す。
-   */
-  parseStampSec_: function (s) {
-    var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
-    if (!m) return null;
-    var d = new Date(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + (m[6] || '00') + '+09:00');
-    return isNaN(d.getTime()) ? null : d;
-  },
-
-  doGet: function (e) {
-    if (e && e.parameter && e.parameter.geo) {
-      return ContentService.createTextOutput(this.geoSummary_())
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.reclass) {
-      return ContentService.createTextOutput(this.reclassSheet())
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.migrate) {
-      return ContentService.createTextOutput(this.migrateSheet())
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.done) {
-      return ContentService.createTextOutput(this.doneLatest_().message)
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.diag) {
-      return this.diag();
-    }
-    if (e && e.parameter && e.parameter.data) {
-      return this.getData();
-    }
-    if (e && e.parameter && e.parameter.test) {
-      var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
-      mod.fixtures = JSON.parse(this.loadSrc('fixtures', this.SRC_FIXTURES));
-      return ContentService.createTextOutput(mod.selfTest())
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.setup) {
-      return ContentService.createTextOutput(this.setupSheet())
-        .setMimeType(ContentService.MimeType.TEXT);
-    }
-    if (e && e.parameter && e.parameter.last) {
-      return this.getLast();
-    }
-    return this.doPost(e);
-  },
-
-  /**
-   * 画面からの呼び出し口。api_ で始まるメソッドだけ実行できる。
-   * 新しい処理を足すときは api_xxx を書くだけでよく、GAS側の変更は要らない。
-   */
-  api: function (name, args) {
-    var fn = this['api_' + name];
-    if (typeof fn !== 'function') return { status: 'unknown', name: name };
-    try {
-      return fn.apply(this, args || []);
-    } catch (err) {
-      return { status: 'error', message: String(err) };
-    }
-  },
-
-  /* ---------- 画面から呼ばれる処理 ---------- */
-
-  /**
-   * ピック(店名)からドロップ(住所)までの標高差を調べる。
-   * 店の座標は resolvePlace（Places API）から取り、配達先はGeocoding APIで座標化する。
-   * 組み合わせ（店×配達先）ごとにキャッシュする。配達先は毎回変わるため、
-   * 店メモ/店情報と違って店名だけでは照合しない。
-   *
-   * あわせて、店と配達先の直線距離をOCRが読み取った配達距離(km)と突き合わせる。
-   * 直線距離の方が大幅に大きい場合、Places APIが同名の別店舗（違う市区町村など）を
-   * 誤って掴んでいる可能性が高いので、その旨を返す。
-   */
-  api_elevation: function (store, address, km) {
-    if (!store || !address) return { status: 'empty' };
-    var key = this.normKey(store) + '||' + this.normKey(address);
-
-    var cache = this.readJson(this.ELEVATION_FILE, {});
-    if (cache[key]) {
-      return this.withSuspicionCheck(cache[key], km);
-    }
-    return this.fetchElevation(store, address, km, key, cache);
-  },
-
-  api_refreshElevation: function (store, address, km) {
-    if (!store || !address) return { status: 'empty' };
-    var key = this.normKey(store) + '||' + this.normKey(address);
-
-    var cache = this.readJson(this.ELEVATION_FILE, {});
-    delete cache[key];
-    return this.fetchElevation(store, address, km, key, cache);
-  },
-
-  withSuspicionCheck: function (entry, km) {
-    var res = {
-      status: 'found',
-      diff: entry.diff,
-      straightKm: entry.straightKm,
-      placeName: entry.placeName,
-      placeAddress: entry.placeAddress
-    };
-    if (km && entry.straightKm != null && entry.straightKm > km * 2.5) {
-      res.suspicious = true;
-    }
-    return res;
-  },
-
-  fetchElevation: function (store, address, km, key, cache) {
-    var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
-    if (!apiKey) return { status: 'nokey' };
-
-    try {
-      var place = this.resolvePlace(store);
-      if (!place || place.lat == null) return { status: 'geofail', message: '店の場所が特定できませんでした' };
-
-      var drop = this.geocode(address, apiKey);
-      if (!drop) return { status: 'geofail', message: '配達先の場所が特定できませんでした' };
-
-      var locations = place.lat + ',' + place.lng + '|' + drop.lat + ',' + drop.lng;
-      var url = 'https://maps.googleapis.com/maps/api/elevation/json?locations='
-        + encodeURIComponent(locations) + '&key=' + apiKey;
-
-      var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-      var body = JSON.parse(resp.getContentText());
-
-      if (body.status !== 'OK' || !body.results || body.results.length < 2) {
-        return { status: 'error', message: body.status || 'unknown' };
-      }
-
-      var diff = Math.round(body.results[1].elevation - body.results[0].elevation);
-      var straightKm = Math.round(this.haversineKm(place.lat, place.lng, drop.lat, drop.lng) * 10) / 10;
-
-      var entry = {
-        diff: diff,
-        straightKm: straightKm,
-        placeName: place.name || '',
-        placeAddress: place.address || ''
-      };
-      cache[key] = entry;
-      this.writeJson(this.ELEVATION_FILE, cache);
-
-      return this.withSuspicionCheck(entry, km);
-    } catch (err) {
-      return { status: 'error', message: String(err) };
-    }
-  },
-
-  /**
-   * 2点間の直線距離(km)。ハーサイン公式。
-   */
-  haversineKm: function (lat1, lng1, lat2, lng2) {
-    var R = 6371;
-    var dLat = (lat2 - lat1) * Math.PI / 180;
-    var dLng = (lng2 - lng1) * Math.PI / 180;
-    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-      + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
-      * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  },
-
-  /**
-   * 店名からGoogleマップ上の正式な店舗情報（正式名称・住所・座標）を解決する。
-   * Places API (New) の Text Search を使う。店名をキーにキャッシュし、
-   * 高低差の計算とGemini店情報プロンプトの両方から共有して使う。
-   */
-  resolvePlace: function (store) {
-    var key = this.normKey(store);
-    var cache = this.readJson(this.PLACES_FILE, {});
-    if (cache[key]) return cache[key];
-
-    var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
-    if (!apiKey) return null;
-
-    try {
-      var resp = UrlFetchApp.fetch('https://places.googleapis.com/v1/places:searchText', {
-        method: 'post',
-        contentType: 'application/json',
-        headers: {
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location'
-        },
-        payload: JSON.stringify({
-          textQuery: store,
-          languageCode: 'ja',
-          regionCode: 'JP',
-          maxResultCount: 1
-        }),
-        muteHttpExceptions: true
-      });
-
-      var body = JSON.parse(resp.getContentText());
-      if (!body.places || !body.places.length) return null;
-
-      var pl = body.places[0];
-      var result = {
-        name: (pl.displayName && pl.displayName.text) || store,
-        address: pl.formattedAddress || '',
-        lat: pl.location ? pl.location.latitude : null,
-        lng: pl.location ? pl.location.longitude : null
-      };
-
-      cache[key] = result;
-      this.writeJson(this.PLACES_FILE, cache);
-      return result;
-    } catch (err) {
-      return null;
-    }
-  },
-
-  geocode: function (query, apiKey) {
-    var url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
-      + encodeURIComponent(query) + '&region=jp&key=' + apiKey;
-    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-    var body = JSON.parse(resp.getContentText());
-    if (body.status !== 'OK' || !body.results || !body.results.length) return null;
-    var loc = body.results[0].geometry.location;
-    return { lat: loc.lat, lng: loc.lng };
-  },
-
-  /**
-   * 配達完了の時刻を記録する（履歴のdoneAtと、シートの「完了時刻」列）。
-   * idは履歴のid（古い履歴はimageId）。取り消しは api_undoDone。
-   */
-  api_markDone: function (id) {
-    return this.setDone_(id, this.stamp('yyyy-MM-dd HH:mm:ss'));
-  },
-
-  /**
-   * 無効な記録（読み取りミス・テスト・キャンセルなど）を、履歴とシートから消す。
-   * 元に戻せない。log.txt（生のOCRログ）とドライブの画像は残す。
-   */
-  api_deleteEntry: function (id) {
-    if (!id) return { status: 'error', message: 'idがありません' };
-
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(10000);
-      got = true;
-    } catch (lockErr) {
-      // ロックが取れなくても続行する
-    }
-
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-      var at = -1;
-      for (var i = 0; i < history.length; i++) {
-        if (history[i].id === id || history[i].imageId === id) { at = i; break; }
-      }
-      if (at < 0) return { status: 'notfound' };
-
-      var hit = history[at];
-      var key = hit.id || this.stemOfImage(hit.image);
-      history.splice(at, 1);
-      this.writeJson(this.HISTORY_FILE, history);
-      CacheService.getScriptCache().remove('data');
-
-      return { status: 'ok', sheet: this.deleteSheetRow_(key) };
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  api_markDoneLatest: function () {
-    return this.doneLatest_();
-  },
-
-  /**
-   * ショートカット用（?done=1）。未完了の配達のうち、直近90分以内で一番古いものを完了にする。
-   * 追加配達などで2件抱えているときは、先に受けた方から完了になる。
-   * 押し忘れて90分以上たったものは対象にしない（画面のボタンで個別に押せる）。
-   */
-  doneLatest_: function () {
-    var history = this.readJson(this.HISTORY_FILE, []);
-    var now = Date.now();
-    var hit = null;
-    for (var i = 0; i < history.length; i++) {
-      var h = history[i];
-      if (h.doneAt) continue;
-      var t = this.parseStampSec_(h.reqAt || (h.ts + ':00'));
-      if (!t) continue;
-      var age = now - t.getTime();
-      if (age > 90 * 60000 || age < -60000) continue;
-      hit = h; // 履歴は新しい順なので、最後に当たったものが一番古い
-    }
-    if (!hit) {
-      return { status: 'none', message: '未完了の配達が見つかりません（90分以内）' };
-    }
-
-    var r = this.setDone_(hit.id || hit.imageId, this.stamp('yyyy-MM-dd HH:mm:ss'));
-    if (r.status !== 'ok') {
-      return { status: 'error', message: '記録できませんでした: ' + (r.message || r.status) };
-    }
-
-    var a = this.parseStampSec_(r.reqAt);
-    var b = this.parseStampSec_(r.doneAt);
-    var mins = (a && b) ? Math.round((b - a) / 6000) / 10 : null;
-    var msg = '完了 ' + r.doneAt.slice(11, 16)
-      + (mins != null ? '（受信から' + mins + '分）' : '')
-      + ' ' + String(hit.store || '').split(' ')[0];
-    if (r.sheet !== 'ok') msg += '\n※シートには未記録';
-    return { status: 'ok', message: msg, doneAt: r.doneAt, store: hit.store };
-  },
-
-  api_undoDone: function (id) {
-    return this.setDone_(id, '');
-  },
-
-  setDone_: function (id, doneAt) {
-    if (!id) return { status: 'error', message: 'idがありません' };
-
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(10000);
-      got = true;
-    } catch (lockErr) {
-      // ロックが取れなくても続行する
-    }
-
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-      var hit = null;
-      for (var i = 0; i < history.length; i++) {
-        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
-      }
-
-      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
-      if (hit) {
-        hit.doneAt = doneAt;
-        this.writeJson(this.HISTORY_FILE, history);
-        CacheService.getScriptCache().remove('data');
-      }
-
-      var sheet = this.setSheetDone_(key, doneAt);
-      if (doneAt) {
-        try { this.fillGeo_(2); } catch (geoErr) { /* 距離の計算が失敗しても、完了の記録には影響させない */ }
-      }
-      return {
-        status: (hit || sheet === 'ok') ? 'ok' : 'notfound',
-        doneAt: doneAt,
-        reqAt: hit ? (hit.reqAt || (hit.ts + ':00')) : '',
-        sheet: sheet
-      };
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  api_saveMemo: function (store, memo) {
-    if (!store) return { status: 'error' };
-    var key = this.normKey(store);
-
-    var stores = this.readJson(this.STORES_FILE, {});
-    var body = String(memo == null ? '' : memo).trim();
-
-    if (!body) {
-      delete stores[key];
-      this.writeJson(this.STORES_FILE, stores);
-      return { status: 'deleted' };
-    }
-
-    var entry = {
-      memo: body,
-      updatedAt: this.stamp('yyyy-MM-dd HH:mm')
-    };
-    stores[key] = entry;
-    this.writeJson(this.STORES_FILE, stores);
-
-    return { status: 'saved', entry: entry };
-  },
-
-  /**
-   * 店の情報をGemini(Web検索つき)で調べる。店名をキーにキャッシュし、
-   * 一度調べた店は次回以降APIを呼ばない。
-   * address(配達先＝お客様の住所)は店の特定に無関係かつ個人情報なので、
-   * 検索クエリには一切含めない。
-   */
-  api_storeInfo: function (store) {
-    if (!store) return { status: 'empty' };
-    var key = this.normKey(store);
-
-    var cache = this.readJson(this.STOREINFO_FILE, {});
-    if (cache[key]) {
-      return { status: 'found', text: cache[key].text, updatedAt: cache[key].updatedAt };
-    }
-    return this.fetchStoreInfo(store, key, cache);
-  },
-
-  /**
-   * キャッシュを捨てて調べ直す。
-   */
-  api_refreshStoreInfo: function (store) {
-    if (!store) return { status: 'empty' };
-    var key = this.normKey(store);
-
-    var cache = this.readJson(this.STOREINFO_FILE, {});
-    delete cache[key];
-    return this.fetchStoreInfo(store, key, cache);
-  },
-
-  fetchStoreInfo: function (store, key, cache) {
-    var apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    if (!apiKey) return { status: 'nokey' };
-
-    try {
-      var place = this.resolvePlace(store);
-      var placeContext = (place && (place.name || place.address))
-        ? ('\nGoogleマップ上の登録情報（参考）: 店名「' + (place.name || '不明') + '」、住所「' + (place.address || '不明') + '」\n')
-        : '';
-
-      var prompt = '自転車での商品配達のため、次の店舗の「現地に着いてから迷わないための情報」を'
-        + 'Web検索して分かる範囲で日本語で教えてください。\n'
-        + 'この店名はUber Eats上の表示名です。最近はゴーストキッチン（バーチャルブランド）といって、'
-        + '1つの実店舗が複数のUber Eats用ブランド名を掲げて営業していることがよくあります。'
-        + 'そうした情報が見つかれば、実際にその場所で営業している本当の店舗名も教えてください'
-        + '（現地の看板や実際の店構えの目印として重要なため）。\n'
-        + '知りたいのは次の項目だけです。営業時間・定休日・電話番号・メニューなど配達と無関係な情報は書かないでください。\n'
-        + '- 実際に営業している店舗名（Uber Eats上の表示名と異なる場合。ゴーストキッチンの母体）\n'
-        + '- 建物名（商業施設・ビルの名前）\n'
-        + '- 何階にあるか\n'
-        + '- 大型施設の場合、複数棟あるならどの棟か\n'
-        + '- 入口の場所（正面/裏口/搬入口など、分かれば）\n'
-        + '- 駐輪場の場所（大型施設の場合、特に重要）\n'
-        + '- 隣接する建物や目印になるもの\n'
-        + '分からない項目は書かず省略してください。分かる項目だけ箇条書きで、6行以内、前置きなしに本文だけ書いてください。'
-        + placeContext
-        + '店名: ' + store;
-
-      var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-        + this.GEMINI_MODEL + ':generateContent?key=' + apiKey;
-
-      var resp = UrlFetchApp.fetch(url, {
-        method: 'post',
-        contentType: 'application/json',
-        payload: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          tools: [{ google_search: {} }],
-          generationConfig: { thinkingConfig: { thinkingBudget: 0 } }
-        }),
-        muteHttpExceptions: true
-      });
-
-      if (resp.getResponseCode() !== 200) {
-        return { status: 'error', message: 'HTTP ' + resp.getResponseCode() + ': ' + resp.getContentText().slice(0, 200) };
-      }
-
-      var body = JSON.parse(resp.getContentText());
-      var cand = body.candidates && body.candidates[0];
-      var parts = cand && cand.content && cand.content.parts;
-      // thought:true の部分は内部の思考メモなので、答えの本文からは除外する
-      var text = parts && parts
-        .filter(function (p) { return !p.thought; })
-        .map(function (p) { return p.text || ''; })
-        .join('').trim();
-
-      if (!text) return { status: 'notfound' };
-
-      var entry = { text: text, updatedAt: this.stamp('yyyy-MM-dd HH:mm') };
-      cache[key] = entry;
-      this.writeJson(this.STOREINFO_FILE, cache);
-
-      return { status: 'found', text: entry.text, updatedAt: entry.updatedAt };
-    } catch (err) {
-      return { status: 'error', message: String(err) };
-    }
-  },
-
-  /* ---------- 画面へのデータ提供（GitHub Pagesからfetchされる） ---------- */
-
-  /**
-   * 画面表示用のデータを組み立てる。直近60秒以内に呼ばれていれば、
-   * Driveを読みに行かずキャッシュした結果をそのまま返す。
-   * ショートカット側でキャプチャ後に一度これを裏で叩いておくと、
-   * 実際に画面を開いたときはこのキャッシュがヒットして瞬時に表示できる。
-   * 新しいキャプチャが来た時点でこのキャッシュは appendHistory が
-   * 即座に破棄するので、古いデータが返り続けることはない。
-   */
-  getData: function () {
-    var c = CacheService.getScriptCache();
-    var cached = c.get('data');
-    if (cached) {
-      return ContentService.createTextOutput(cached).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    var history = this.readJson(this.HISTORY_FILE, []);
-    var stores = this.readJson(this.STORES_FILE, {});
-    var infoCache = this.readJson(this.STOREINFO_FILE, {});
-    var self = this;
-
-    var memos = {};
-    var infos = {};
-    history.forEach(function (h) {
-      if (!h.store) return;
-      var key = self.normKey(h.store);
-      if (stores[key]) memos[h.store] = stores[key];
-      if (infoCache[key]) infos[h.store] = infoCache[key];
-    });
-
-    var json = JSON.stringify({ history: history, memos: memos, infos: infos, version: this.VERSION });
-    c.put('data', json, 60);
-
-    return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);
-  },
-
-  /* ---------- 診断 ---------- */
-
-  diag: function () {
-    var lines = [];
-    lines.push('app.js version: ' + this.VERSION);
-
-    try {
-      var folder = DriveApp.getFolderById(this.FOLDER_ID);
-      lines.push('folder: OK (' + folder.getName() + ')');
-    } catch (err) {
-      lines.push('folder: NG ' + err);
-      return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
-    }
-
-    try {
-      this.getFile('diag_test.txt').setContent('diag ' + new Date());
-      lines.push('write: OK');
-    } catch (err) {
-      lines.push('write: NG ' + err);
-    }
-
-    try {
-      var files = DriveApp.getFolderById(this.FOLDER_ID).getFilesByName('diag_test.txt');
-      lines.push(files.hasNext() ? 'read: OK' : 'read: NG not found');
-    } catch (err) {
-      lines.push('read: NG ' + err);
-    }
-
-    try {
-      var history = this.readJson(this.HISTORY_FILE, 'NOFILE');
-      lines.push('history.json: ' + JSON.stringify(history));
-    } catch (err) {
-      lines.push('history.json: NG ' + err);
-    }
-
-    try {
-      var shDiag = this.getSheet_(false);
-      lines.push('sheet: ' + (shDiag ? ('OK ' + Math.max(shDiag.getLastRow() - 1, 0) + '行') : '未設定'));
-    } catch (err) {
-      lines.push('sheet: NG ' + err);
-    }
-
-    var geminiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    lines.push('gemini key: ' + (geminiKey ? 'set' : 'not set'));
-
-    var mapsKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
-    lines.push('maps key: ' + (mapsKey ? 'set' : 'not set'));
-
-    return ContentService.createTextOutput(lines.join('\n')).setMimeType(ContentService.MimeType.TEXT);
-  },
-
-  /* ---------- 保存まわり ---------- */
-
-  saveImage: function (b64, ok) {
-    try {
-      var bytes = Utilities.base64Decode(b64);
-      var blob = Utilities.newBlob(bytes, 'image/jpeg');
-      var name = this.stamp('yyyyMMdd_HHmmss') + '_' + (ok ? 'ok' : 'fail') + '.jpg';
-      blob.setName(name);
-      var file = DriveApp.getFolderById(this.FOLDER_ID).createFile(blob);
-      return { name: name, id: file.getId() };
-    } catch (err) {
-      return { name: '', id: '' };
-    }
-  },
-
-  appendHistory: function (p, img, geo) {
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-
-      var entry = {
-        id: this.makeId(img),
-        headId: p.isAdditional ? this.findHeadId_(history, Date.now()) : '',
-        kind: p.kind || '',
-        itemTypes: p.itemTypes != null ? p.itemTypes : null,
-        itemCount: p.itemCount != null ? p.itemCount : null,
-        ts: this.stamp('yyyy-MM-dd HH:mm'),
-        reqAt: this.stamp('yyyy-MM-dd HH:mm:ss'),
-        store: p.store || '',
-        address: p.address || '',
-        price: p.price != null ? p.price : null,
-        minutes: p.minutes != null ? p.minutes : null,
-        km: p.km != null ? p.km : null,
-        hourlyRate: p.hourlyRate != null ? p.hourlyRate : null,
-        multiplier: p.multiplier != null ? p.multiplier : 1,
-        additional: !!p.isAdditional,
-        image: (img && img.name) || '',
-        imageId: (img && img.id) || '',
-        doneAt: '',
-        lat: geo ? geo.lat : null,
-        lng: geo ? geo.lng : null
-      };
-      // 店の座標がキャッシュにあれば、その場で直線距離まで出す（ネット通信はしない）
-      if (geo) this.applyGeo_(entry, this.geoCached_(entry.store));
-      history.unshift(entry);
-
-      this.writeJson(this.HISTORY_FILE, history.slice(0, this.HISTORY_MAX));
-      CacheService.getScriptCache().remove('data');
-      return entry;
-    } catch (err) {
-      // 履歴の失敗はメイン処理に影響させない
-      return null;
-    }
-  },
-
-  appendLog: function (ok, fileName, rawText, p) {
-    try {
-      var file = this.getFile(this.LOG_FILE);
-      var ts = this.stamp('yyyy-MM-dd HH:mm');
-      var lines = rawText.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-
-      var block = [];
-      block.push('----------');
-      block.push(ts + ' [' + (ok ? 'OK' : 'FAIL') + '] image: ' + (fileName || '(なし)'));
-      block.push('--- OCR行 ---');
-      lines.forEach(function (s, i) { block.push(i + ': ' + s); });
-      block.push('store: ' + (p.store || '(空)'));
-      block.push('address: ' + (p.address || '(空)'));
-      block.push('price: ' + (p.price != null ? p.price : '-') +
-        ' minutes: ' + (p.minutes != null ? p.minutes : '-') +
-        ' hourlyRate: ' + (p.hourlyRate != null ? p.hourlyRate : '-') +
-        ' multiplier: ' + (p.multiplier != null ? p.multiplier : '-') +
-        ' additional: ' + (p.isAdditional ? 'yes' : 'no'));
-
-      file.setContent(file.getBlob().getDataAsString() + block.join('\n') + '\n');
-    } catch (err) {
-      // ログ失敗はメイン処理に影響させない
-    }
-  },
-
-  appendNote: function (note) {
-    try {
-      var file = this.getFile(this.LOG_FILE);
-      var block = '>>> NOTE ' + this.stamp('yyyy-MM-dd HH:mm') + ': ' + note + '\n';
-      file.setContent(file.getBlob().getDataAsString() + block);
-      return true;
-    } catch (err) {
-      return false;
-    }
-  },
-
-  saveLast: function (p) {
-    try {
-      this.writeJson(this.LAST_FILE, {
-        store: p.store || '',
-        address: p.address || '',
-        price: p.price != null ? p.price : '',
-        minutes: p.minutes != null ? p.minutes : '',
-        km: p.km != null ? p.km : '',
-        hourlyRate: p.hourlyRate != null ? p.hourlyRate : '',
-        multiplier: p.multiplier != null ? p.multiplier : 1,
-        additional: !!p.isAdditional,
-        ts: this.stamp('yyyy-MM-dd HH:mm')
-      });
-    } catch (err) {
-      // 失敗してもメイン処理に影響させない
-    }
-  },
-
-  getLast: function () {
-    try {
-      var folder = DriveApp.getFolderById(this.FOLDER_ID);
-      var files = folder.getFilesByName(this.LAST_FILE);
-      var content = files.hasNext() ? files.next().getBlob().getDataAsString() : '{}';
-      var b64 = Utilities.base64Encode(content, Utilities.Charset.UTF_8);
-      return ContentService.createTextOutput(b64).setMimeType(ContentService.MimeType.TEXT);
-    } catch (err) {
-      return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
-    }
-  },
-
-  /* ---------- 受信時の位置と、店までの直線距離 ---------- */
-
-  /**
-   * ショートカットから来た lat / lng を取り出す。日本の範囲外や数字でないものは捨てる。
-   * 位置は小数4桁（約11m）に丸めて持つ。
-   */
-  readGeo_: function (payload) {
-    var lat = Number(payload && payload.lat);
-    var lng = Number(payload && payload.lng);
-    if (!isFinite(lat) || !isFinite(lng)) return null;
-    if (lat < 20 || lat > 46 || lng < 122 || lng > 154) return null;
-    return { lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 };
-  },
-
-  /** 2点間の直線距離（km）。ハーバーサイン */
-  haversineKm_: function (lat1, lng1, lat2, lng2) {
-    var rad = Math.PI / 180;
-    var dLat = (lat2 - lat1) * rad;
-    var dLng = (lng2 - lng1) * rad;
-    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-      + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    return 6371.0088 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  },
-
-  /** 店の座標がキャッシュ(places.json)にあれば返す。無ければ null（ネット通信はしない） */
-  geoCached_: function (store) {
-    var cache = this.readJson(this.PLACES_FILE, {});
-    return cache[this.normKey(store)] || null;
-  },
-
-  /** 店の座標と、受信位置からの直線距離（km、小数2桁）を entry に入れる */
-  applyGeo_: function (entry, place) {
-    if (!place || place.lat == null || place.lng == null) return;
-    if (entry.lat == null || entry.lng == null) return;
-    entry.storeLat = place.lat;
-    entry.storeLng = place.lng;
-    entry.pickupKm = Math.round(this.haversineKm_(entry.lat, entry.lng, place.lat, place.lng) * 100) / 100;
-  },
-
-  /**
-   * シートと履歴のうち、位置はあるが店までの距離が未計算の行を埋める。
-   * 店の座標がキャッシュに無いときだけ Places API を呼ぶ（limit 件まで）。
-   * 座標が見つからなかった店は「不明」を入れ、毎回やり直さないようにする。
-   */
-  fillGeo_: function (limit) {
-    var out = { filled: 0, unresolved: 0, remaining: 0, history: 0 };
-    var places = this.readJson(this.PLACES_FILE, {});
-    var calls = 0;
-    var self = this;
-
-    var lookup = function (store) {
-      var key = self.normKey(store);
-      if (places[key]) return places[key];
-      if (calls >= limit) return undefined; // 今回は見送り
-      calls++;
-      var pl = self.resolvePlace(store);
-      if (pl) places[key] = pl;
-      return pl || null;
-    };
-
-    var sh = this.getSheet_(false);
-    if (sh && sh.getLastRow() >= 2) {
-      var n = sh.getLastRow() - 1;
-      var stores = sh.getRange(2, 3, n, 1).getValues();
-      var geo = sh.getRange(2, 25, n, 5).getValues(); // lat, lng, 店lat, 店lng, 直線km
-      var touched = false;
-      for (var i = 0; i < n; i++) {
-        var g = geo[i];
-        if (g[0] === '' || g[1] === '' || g[4] !== '') continue;
-        var pl = lookup(String(stores[i][0]));
-        if (pl === undefined) { out.remaining++; continue; }
-        if (!pl || pl.lat == null) { g[4] = '不明'; out.unresolved++; touched = true; continue; }
-        g[2] = pl.lat;
-        g[3] = pl.lng;
-        g[4] = Math.round(this.haversineKm_(Number(g[0]), Number(g[1]), pl.lat, pl.lng) * 100) / 100;
-        out.filled++;
-        touched = true;
-      }
-      if (touched) sh.getRange(2, 25, n, 5).setValues(geo);
-    }
-
-    var history = this.readJson(this.HISTORY_FILE, []);
-    var hTouched = false;
-    for (var j = 0; j < history.length; j++) {
-      var h = history[j];
-      if (h.lat == null || h.pickupKm != null) continue;
-      var pl2 = places[this.normKey(h.store)];
-      if (!pl2) continue;
-      this.applyGeo_(h, pl2);
-      if (h.pickupKm != null) { out.history++; hTouched = true; }
-    }
-    if (hTouched) {
-      this.writeJson(this.HISTORY_FILE, history);
-      CacheService.getScriptCache().remove('data');
-    }
-    return out;
-  },
-
-  /** ?geo=1：未計算の店までの直線距離を、まとめて埋める（1回40店まで。残りがあればもう一度開く） */
-  geoSummary_: function () {
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(20000);
-      got = true;
-    } catch (lockErr) {
-      // 続行
-    }
-    try {
-      var r = this.fillGeo_(40);
-      return 'OK: ' + r.filled + '件の距離を計算しました'
-        + (r.unresolved ? '\n店が見つからず「不明」にしたもの: ' + r.unresolved + '件' : '')
-        + (r.remaining ? '\nまだ残り: ' + r.remaining + '件（もう一度開いてください）' : '')
-        + (r.history ? '\n画面の履歴に反映: ' + r.history + '件' : '');
-    } catch (err) {
-      return 'NG: ' + err;
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  /* ---------- スプレッドシート（全件のマスター） ---------- */
-
-  /**
-   * 追加配達の記録が「どの記録に足されたか」を返す。履歴は新しい順。
-   * 直前の「追加ではない」記録が90分以内ならそのid、そうでなければ ''。
-   */
-  findHeadId_: function (history, nowMs) {
-    for (var i = 0; i < history.length; i++) {
-      var h = history[i];
-      if (h.additional) continue;
-      var t = this.parseStampSec_(h.reqAt || (h.ts + ':00'));
-      if (t && nowMs - t.getTime() <= 90 * 60000) {
-        return h.id || this.stemOfImage(h.image) || '';
-      }
-      return '';
-    }
-    return '';
-  },
-
-  stemOfImage: function (name) {
-    return String(name || '').replace(/_(ok|fail)\.jpg$/, '');
-  },
-
-  /** 画像ファイル名（秒まで入る）から行のidを作る。画像が無ければ現在時刻から作る */
-  makeId: function (img) {
-    return this.stemOfImage(img && img.name) || this.stamp('yyyyMMdd_HHmmss');
-  },
-
-  /**
-   * シートを返す。create=true のときだけ、無ければ新規作成する（作成は ?setup=1 のときだけ）。
-   * 未設定なら null。
-   */
-  getSheet_: function (create) {
-    var props = PropertiesService.getScriptProperties();
-    var id = props.getProperty(this.SHEET_PROP);
-    if (id) {
-      return SpreadsheetApp.openById(id).getSheetByName(this.SHEET_NAME);
-    }
-    if (!create) return null;
-
-    var ss = SpreadsheetApp.create('UberLog');
-    ss.setSpreadsheetTimeZone('Asia/Tokyo');
-    var sh = ss.getSheets()[0];
-    sh.setName(this.SHEET_NAME);
-    sh.getRange(1, 1, 1, this.SHEET_HEADERS.length)
-      .setValues([this.SHEET_HEADERS]).setFontWeight('bold');
-    sh.setFrozenRows(1);
-    sh.getRange('B:B').setNumberFormat('yyyy-mm-dd hh:mm:ss');
-    sh.getRange('K:K').setNumberFormat('yyyy-mm-dd hh:mm:ss');
-    sh.getRange('T:T').setNumberFormat('yyyy-mm-dd hh:mm:ss');
-    props.setProperty(this.SHEET_PROP, ss.getId());
-    try {
-      DriveApp.getFileById(ss.getId()).moveTo(this.getFolder());
-    } catch (err) {
-      // 移動に失敗してもシート自体は使える
-    }
-    return sh;
-  },
-
-  /** 1行分のA〜K列（id〜完了時刻） */
-  entryRow_: function (e) {
-    return [
-      e.id || '',
-      e.reqAt || '',
-      e.store || '',
-      e.address || '',
-      e.price != null ? e.price : '',
-      e.minutes != null ? e.minutes : '',
-      e.km != null ? e.km : '',
-      e.multiplier || 1,
-      e.additional ? '追加' : '',
-      e.hourlyRate != null ? e.hourlyRate : '',
-      e.doneAt || ''
-    ];
-  },
-
-  /**
-   * L列（実所要＝完了−受信）とM列（無音＝この受信−前の完了）の数式。
-   * M列がマイナスなら、前の配達が終わる前に次を受けた（重なり）という意味。
-   */
-  rowFormulas_: function (r) {
-    return [
-      // [0] L 実所要(分)：Uberの実績(R)があればそれ。なければ完了ボタンの時刻(K)から
-      '=IF(R' + r + '<>"",R' + r + ',IF(OR(B' + r + '="",K' + r + '=""),"",ROUND((K' + r + '-B' + r + ')*1440,1)))',
-      // [1] M 無音(分)：前の行の完了(T)から、この受信までの分。マイナスなら重なっている
-      r > 2 ? '=IF(OR(T' + (r - 1) + '="",B' + r + '=""),"",ROUND((B' + r + '-T' + (r - 1) + ')*1440,1))' : '',
-      // [2] T 完了：ボタンの時刻(K)があればそれ。なければ 受信＋実績分(R) で推定
-      '=IF(K' + r + '<>"",K' + r + ',IF(OR(R' + r + '="",B' + r + '=""),"",B' + r + '+R' + r + '/1440))'
-    ];
-  },
-
-  appendSheet: function (e) {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return false;
-      var r = sh.getLastRow() + 1;
-      sh.getRange(r, 1, 1, 11).setValues([this.entryRow_(e)]);
-      var f = this.rowFormulas_(r);
-      sh.getRange(r, 12, 1, 2).setFormulas([[f[0], f[1]]]);
-      sh.getRange(r, 14, 1, 4).setValues([['', '', '', e.image || '']]);
-      sh.getRange(r, 20).setFormula(f[2]);
-      sh.getRange(r, 21).setValue(e.headId || '');
-      sh.getRange(r, 22, 1, 3).setValues([[e.kind || '', e.itemTypes != null ? e.itemTypes : '', e.itemCount != null ? e.itemCount : '']]);
-      sh.getRange(r, 25, 1, 5).setValues([[
-        e.lat != null ? e.lat : '', e.lng != null ? e.lng : '',
-        e.storeLat != null ? e.storeLat : '', e.storeLng != null ? e.storeLng : '',
-        e.pickupKm != null ? e.pickupKm : ''
-      ]]);
-      return true;
-    } catch (err) {
-      return false;
-    }
-  },
-
-  setSheetDone_: function (key, doneAt) {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return 'none';
-      var last = sh.getLastRow();
-      if (last < 2 || !key) return 'notfound';
-      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
-      if (!f) return 'notfound';
-      sh.getRange(f.getRow(), 11).setValue(doneAt);
-      return 'ok';
-    } catch (err) {
-      return 'error';
-    }
-  },
-
-  /**
-   * シートの該当行を削除する。
-   * 削除した行を参照していた次の行の「無音」数式が #REF! になるので、張り直す。
-   */
-  deleteSheetRow_: function (key) {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return 'none';
-      var last = sh.getLastRow();
-      if (last < 2 || !key) return 'notfound';
-      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
-      if (!f) return 'notfound';
-
-      var row = f.getRow();
-      if (row < 2) return 'notfound';
-      sh.deleteRow(row);
-
-      if (row <= sh.getLastRow()) {
-        var cell = sh.getRange(row, 13);
-        if (row > 2) cell.setFormula(this.rowFormulas_(row)[1]);
-        else cell.clearContent();
-      }
-      return 'ok';
-    } catch (err) {
-      return 'error';
-    }
-  },
-
-  /**
-   * log.txt のOCRログを今のlogic.jsで読み直し、重複（同じ店・住所・金額で30分以内）を除いた行にする。
-   * 失敗(FAIL)と、店名か住所が読めなかったものは除く。
-   */
-  parseLogRows_: function () {
-    var self = this;
-    var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
-    var raw = this.getFile(this.LOG_FILE).getBlob().getDataAsString();
-    var blocks = raw.split(/^----------$/m);
-    var rows = [];
-    var usedIds = {};
-
-    blocks.forEach(function (b) {
-      var lines = b.split('\n');
-      var head = null;
-      var start = -1;
-      for (var i = 0; i < lines.length; i++) {
-        var hm = lines[i].match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \[(OK|FAIL)\] image: (.*)$/);
-        if (hm) head = hm;
-        if (lines[i] === '--- OCR行 ---') { start = i; break; }
-      }
-      if (!head || head[2] !== 'OK' || start < 0) return;
-
-      var ocr = [];
-      for (var j = start + 1; j < lines.length; j++) {
-        var m = lines[j].match(/^(\d+): (.*)$/);
-        if (m) ocr.push(m[2]);
-        else if (/^store:/.test(lines[j])) break;
-      }
-
-      var p = mod.parse(ocr.join('\n'));
-      if (!p.store || !p.address) return;
-
-      var ts = head[1];
-      var image = head[3] === '(なし)' ? '' : head[3];
-      var t = self.parseStamp(ts);
-      var tms = t ? t.getTime() : 0;
-
-      var dup = rows.slice(-5).some(function (u) {
-        return u.store === p.store && u.address === p.address && u.price === p.price
-          && Math.abs(tms - u._t) <= 30 * 60000;
-      });
-      if (dup) return;
-
-      var id = image
-        ? self.stemOfImage(image)
-        : ts.slice(0, 10).replace(/-/g, '') + '_' + ts.slice(11, 13) + ts.slice(14, 16) + '00';
-      while (usedIds[id]) id += 'x';
-      usedIds[id] = true;
-
-      var headId = '';
-      if (p.isAdditional) {
-        for (var q = rows.length - 1; q >= 0; q--) {
-          if (rows[q].additional) continue;
-          if (tms - rows[q]._t >= 0 && tms - rows[q]._t <= 90 * 60000) headId = rows[q].id;
-          break;
-        }
-      }
-
-      rows.push({
-        _t: tms,
-        headId: headId,
-        kind: p.kind || '',
-        itemTypes: p.itemTypes != null ? p.itemTypes : null,
-        itemCount: p.itemCount != null ? p.itemCount : null,
-        id: id,
-        reqAt: ts + ':00',
-        store: p.store,
-        address: p.address,
-        price: p.price,
-        minutes: p.minutes,
-        km: p.km,
-        multiplier: p.multiplier,
-        additional: p.isAdditional,
-        hourlyRate: p.hourlyRate,
-        doneAt: '',
-        image: image
-      });
-    });
-    return rows;
-  },
-
-  /**
-   * ?migrate=1 で呼ぶ。既存シートに、実績分・実績km・完了(確定/推定)の列を足し、
-   * 実所要・無音の数式を新しい式に張り替える。何度呼んでも同じ結果になる。
-   */
-  migrateSheet: function () {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return 'シートが未設定です（先に ?setup=1 を開いてください）';
-      var last = sh.getLastRow();
-      sh.getRange(1, 1, 1, this.SHEET_HEADERS.length)
-        .setValues([this.SHEET_HEADERS]).setFontWeight('bold');
-      sh.getRange('T:T').setNumberFormat('yyyy-mm-dd hh:mm:ss');
-      if (last >= 2) {
-        var n = last - 1;
-        var lm = [];
-        var t = [];
-        for (var i = 0; i < n; i++) {
-          var f = this.rowFormulas_(i + 2);
-          lm.push([f[0], f[1]]);
-          t.push([f[2]]);
-        }
-        sh.getRange(2, 12, n, 2).setFormulas(lm);
-        sh.getRange(2, 20, n, 1).setFormulas(t);
-
-        // 追加配達の行に「どの記録に足されたか」を入れる（A:id, B:受信時刻, I:追加配達）
-        var vals = sh.getRange(2, 1, n, 9).getValues();
-        var heads = [];
-        var lastHead = null;
-        for (var j = 0; j < n; j++) {
-          var id = String(vals[j][0]);
-          var b = vals[j][1];
-          var bt = (b instanceof Date) ? b.getTime() : NaN;
-          if (isNaN(bt)) {
-            var pd = this.parseStampSec_(String(b));
-            bt = pd ? pd.getTime() : NaN;
-          }
-          if (String(vals[j][8]) === '追加') {
-            var ok = lastHead && bt >= lastHead.t && bt - lastHead.t <= 90 * 60000;
-            heads.push([ok ? lastHead.id : '']);
-          } else {
-            heads.push(['']);
-            lastHead = { id: id, t: bt };
-          }
-        }
-        sh.getRange(2, 21, n, 1).setValues(heads);
-      }
-      return 'OK: ' + Math.max(last - 1, 0) + '行の数式を更新しました';
-    } catch (err) {
-      return 'NG: ' + err;
-    }
-  },
-
-  /** idで行を探して、指定の列（1始まり）に値を入れる。結果は 'ok' / 'none' / 'notfound' / 'error' */
-  /**
-   * ?reclass=1 で呼ぶ。log.txt のOCRログを読み直して、過去の記録に
-   * 種別（買い物代行）・品目数・点数を付ける。履歴（直近20件）にも付ける。
-   * 手でチェックを入れた「買い物代行」は消さない。何度呼んでも同じ結果になる。
-   */
-  reclassSheet: function () {
-    try {
-      var rows = this.parseLogRows_();
-      var byId = {};
-      rows.forEach(function (r) { byId[r.id] = r; });
-
-      var msg = [];
-
-      var sh = this.getSheet_(false);
-      if (sh && sh.getLastRow() >= 2) {
-        var n = sh.getLastRow() - 1;
-        var ids = sh.getRange(2, 1, n, 1).getValues();
-        var cur = sh.getRange(2, 22, n, 3).getValues();
-        var changed = 0;
-        for (var i = 0; i < n; i++) {
-          var r = byId[String(ids[i][0])];
-          if (!r) continue;
-          if (r.kind === '買い物代行' && cur[i][0] !== '買い物代行') {
-            cur[i][0] = '買い物代行';
-            changed++;
-          }
-          if (r.itemTypes != null) {
-            cur[i][1] = r.itemTypes;
-            cur[i][2] = r.itemCount;
-          }
-        }
-        sh.getRange(2, 22, n, 3).setValues(cur);
-        msg.push('シート: ' + changed + '件を買い物代行に分類しました');
-      } else {
-        msg.push('シート: 未設定のためスキップ');
-      }
-
-      var history = this.readJson(this.HISTORY_FILE, []);
-      var hc = 0;
-      for (var j = 0; j < history.length; j++) {
-        var h = history[j];
-        var hr = byId[h.id || this.stemOfImage(h.image)];
-        if (!hr) continue;
-        if (hr.kind === '買い物代行' && h.kind !== '買い物代行') { h.kind = '買い物代行'; hc++; }
-        if (hr.itemTypes != null) { h.itemTypes = hr.itemTypes; h.itemCount = hr.itemCount; }
-      }
-      this.writeJson(this.HISTORY_FILE, history);
-      CacheService.getScriptCache().remove('data');
-      msg.push('履歴: ' + hc + '件');
-
-      return 'OK\n' + msg.join('\n');
-    } catch (err) {
-      return 'NG: ' + err;
-    }
-  },
-
-  setSheetCell_: function (key, col, value) {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return 'none';
-      var last = sh.getLastRow();
-      if (last < 2 || !key) return 'notfound';
-      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
-      if (!f) return 'notfound';
-      sh.getRange(f.getRow(), col).setValue(value);
-      return 'ok';
-    } catch (err) {
-      return 'error';
-    }
-  },
-
-  setSheetActual_: function (key, actualMin, actualKm) {
-    try {
-      var sh = this.getSheet_(false);
-      if (!sh) return 'none';
-      var last = sh.getLastRow();
-      if (last < 2 || !key) return 'notfound';
-      var f = sh.getRange(1, 1, last, 1).createTextFinder(key).matchEntireCell(true).findNext();
-      if (!f) return 'notfound';
-      sh.getRange(f.getRow(), 18, 1, 2).setValues([[actualMin, actualKm === null ? '' : actualKm]]);
-      return 'ok';
-    } catch (err) {
-      return 'error';
-    }
-  },
-
-  /**
-   * Uberの売り上げ状況を見て、実際にかかった時間（分・秒）と距離を手で入れる。
-   * 履歴のactualMin/actualKmと、シートの「実績分」「実績km」列に入る。
-   */
-  /**
-   * 案件の種別を付ける。いまは「買い物代行」（店内で品物を選んで購入するタイプ）だけ。
-   * 空文字で解除。履歴のkindと、シートの「種別」列（V列）に入る。
-   */
-  api_setKind: function (id, kind) {
-    if (!id) return { status: 'error', message: 'idがありません' };
-    var k = (kind === '買い物代行') ? '買い物代行' : '';
-
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(10000);
-      got = true;
-    } catch (lockErr) {
-      // 続行
-    }
-
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-      var hit = null;
-      for (var i = 0; i < history.length; i++) {
-        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
-      }
-      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
-      if (hit) {
-        hit.kind = k;
-        this.writeJson(this.HISTORY_FILE, history);
-        CacheService.getScriptCache().remove('data');
-      }
-      var sheet = this.setSheetCell_(key, 22, k);
-      return { status: (hit || sheet === 'ok') ? 'ok' : 'notfound', kind: k, sheet: sheet };
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  api_saveActual: function (id, min, sec, km) {
-    if (!id) return { status: 'error', message: 'idがありません' };
-
-    var m = Number(min);
-    var s = (sec === '' || sec == null) ? 0 : Number(sec);
-    var k = (km === '' || km == null) ? null : Number(km);
-    if (!isFinite(m) || m < 0 || !isFinite(s) || s < 0 || s >= 60) {
-      return { status: 'error', message: '分と秒を数字で入れてください（秒は0〜59）' };
-    }
-    if (k !== null && (!isFinite(k) || k < 0)) {
-      return { status: 'error', message: 'kmを数字で入れてください' };
-    }
-    var actualMin = Math.round((m * 60 + s) / 0.6) / 100; // 0.01分単位（秒まで復元できる）
-
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(10000);
-      got = true;
-    } catch (lockErr) {
-      // 続行
-    }
-
-    try {
-      var history = this.readJson(this.HISTORY_FILE, []);
-      var hit = null;
-      for (var i = 0; i < history.length; i++) {
-        if (history[i].id === id || history[i].imageId === id) { hit = history[i]; break; }
-      }
-      var key = hit ? (hit.id || this.stemOfImage(hit.image)) : id;
-      if (hit) {
-        hit.actualMin = actualMin;
-        hit.actualKm = k;
-        this.writeJson(this.HISTORY_FILE, history);
-        CacheService.getScriptCache().remove('data');
-      }
-      var sheet = this.setSheetActual_(key, actualMin, k);
-      return {
-        status: (hit || sheet === 'ok') ? 'ok' : 'notfound',
-        actualMin: actualMin,
-        actualKm: k,
-        sheet: sheet
-      };
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  /**
-   * ?setup=1 で呼ぶ。シートを作り（無ければ）、log.txtの過去分を取り込む。
-   * すでにデータがある場合は何もしない（二重取り込み防止）。
-   */
-  setupSheet: function () {
-    var lock = LockService.getScriptLock();
-    var got = false;
-    try {
-      lock.waitLock(20000);
-      got = true;
-    } catch (lockErr) {
-      // 続行
-    }
-
-    try {
-      var sh = this.getSheet_(true);
-      var url = sh.getParent().getUrl();
-      if (sh.getLastRow() > 1) {
-        return 'すでにデータがあります（' + (sh.getLastRow() - 1) + '行）。取り込みはスキップしました\n' + url;
-      }
-
-      var rows = this.parseLogRows_();
-      if (!rows.length) return 'log.txt から取り込めるデータがありません\n' + url;
-
-      var self = this;
-      var n = rows.length;
-      sh.getRange(2, 1, n, 11).setValues(rows.map(function (r) { return self.entryRow_(r); }));
-      var formulas = [];
-      var tFormulas = [];
-      for (var i = 0; i < n; i++) {
-        var ff = this.rowFormulas_(i + 2);
-        formulas.push([ff[0], ff[1]]);
-        tFormulas.push([ff[2]]);
-      }
-      sh.getRange(2, 12, n, 2).setFormulas(formulas);
-      sh.getRange(2, 20, n, 1).setFormulas(tFormulas);
-      sh.getRange(2, 21, n, 1).setValues(rows.map(function (r) { return [r.headId || '']; }));
-      sh.getRange(2, 22, n, 3).setValues(rows.map(function (r) { return [r.kind || '', r.itemTypes != null ? r.itemTypes : '', r.itemCount != null ? r.itemCount : '']; }));
-      sh.getRange(2, 14, n, 4).setValues(rows.map(function (r) { return ['', '', '', r.image || '']; }));
-
-      return 'OK: ' + n + '件を取り込みました\n' + url;
-    } catch (err) {
-      return 'NG: ' + err;
-    } finally {
-      if (got) {
-        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
-      }
-    }
-  },
-
-  /* ---------- 汎用 ---------- */
-
-  /**
-   * 店名をキャッシュ照合用に正規化する。前後の空白除去、全角スペースの半角化、
-   * 連続する空白の圧縮のみ行う。表示用の店名そのものはどこにも書き換えない。
-   */
-  normKey: function (s) {
-    return String(s || '').trim().replace(/[\u3000\s]+/g, ' ');
-  },
-
-  stamp: function (fmt) {
-    return Utilities.formatDate(new Date(), 'Asia/Tokyo', fmt);
-  },
-
-  getFolder: function () {
-    if (!this._folder) {
-      this._folder = DriveApp.getFolderById(this.FOLDER_ID);
-    }
-    return this._folder;
-  },
-
-  getFile: function (fileName) {
-    var folder = this.getFolder();
-    var files = folder.getFilesByName(fileName);
-    return files.hasNext() ? files.next() : folder.createFile(fileName, '', MimeType.PLAIN_TEXT);
-  },
-
-  readJson: function (fileName, fallback) {
-    try {
-      var folder = this.getFolder();
-      var files = folder.getFilesByName(fileName);
-      if (!files.hasNext()) return fallback;
-      var text = files.next().getBlob().getDataAsString();
-      if (!text) return fallback;
-      return JSON.parse(text);
-    } catch (err) {
-      return fallback;
-    }
-  },
-
-  writeJson: function (fileName, obj) {
-    this.getFile(fileName).setContent(JSON.stringify(obj));
-  },
-
-  out: function (res) {
-    var b64 = Utilities.base64Encode(JSON.stringify(res), Utilities.Charset.UTF_8);
-    return ContentService.createTextOutput(b64).setMimeType(ContentService.MimeType.TEXT);
-  },
-
-  jsonOut: function (obj) {
-    return ContentService.createTextOutput(JSON.stringify(obj))
-      .setMimeType(ContentService.MimeType.JSON);
-  },
-
-  loadSrc: function (key, url) {
-    var c = CacheService.getScriptCache();
-    var hit = c.get(key);
-    if (hit) return hit;
-    var body = UrlFetchApp.fetch(url + '?_=' + Date.now(), { muteHttpExceptions: true }).getContentText();
-    c.put(key, body, 3600);
-    return body;
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>配達履歴</title>
+<style>
+  :root {
+    --bg: #e9edf0;
+    --surface: #ffffff;
+    --ink: #14202a;
+    --muted: #5b6c78;
+    --line: #c9d3da;
+    --good: #0e7a4f;
+    --warn: #b4441f;
+    --link: #1f5fa8;
+    --memo: #fdf8e7;
+    --memoline: #e0d3a3;
+    --pick: #eef3fb;
+    --pickline: #b9cdea;
+    --drop: #fbeeee;
+    --dropline: #e3bcbc;
+    --info: #eef7f1;
+    --infoline: #bcdcc7;
   }
-})
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    font-feature-settings: "tnum" 1;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .wrap {
+    max-width: 430px;
+    margin: 0 auto;
+    padding: 8px 10px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .card + .card { margin-top: 8px; }
+
+  .card.swap { animation: fade .16s ease-out; }
+  @keyframes fade { from { opacity: .35; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .card.swap { animation: none; }
+  }
+
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .nav button {
+    flex: 0 0 auto;
+    width: 42px;
+    height: 38px;
+    font-size: 19px;
+    line-height: 1;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+  }
+  .nav button:disabled { opacity: .3; }
+  .nav button:active:not(:disabled) { background: var(--line); }
+
+  .stamp {
+    flex: 1 1 auto;
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.3;
+  }
+  .stamp b {
+    display: block;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .block { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .block:last-child { border-bottom: 0; }
+
+  /* ---- ピック / ドロップ ---- */
+  .stop {
+    margin: 8px 10px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    padding: 9px 10px;
+  }
+  .stop.pick { background: var(--pick); border-color: var(--pickline); }
+  .stop.drop { background: var(--drop); border-color: var(--dropline); }
+
+  .stop .label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 0;
+  }
+  .stop .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .stop.pick .dot { background: var(--link); }
+  .stop.drop .dot { background: var(--warn); }
+
+  .stop-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 4px 0 6px;
+  }
+  .stop-text p {
+    margin: 0;
+    flex: 1 1 auto;
+    line-height: 1.35;
+  }
+  .stop.pick .stop-text p { font-size: 20px; font-weight: 600; }
+  .stop.drop .stop-text p { font-size: 18px; }
+
+  .copy {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .copy:active { background: var(--line); }
+  .copy.copied { color: var(--good); border-color: var(--good); }
+
+  .label { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+  .btn {
+    display: inline-block;
+    padding: 7px 12px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--link);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    text-decoration: none;
+    font-family: inherit;
+  }
+  .btn:active { background: var(--line); }
+  .btn:disabled { opacity: .5; }
+
+  .btn.plain {
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    padding: 7px 4px;
+  }
+
+  .btn.danger { color: var(--warn); }
+
+  .btn.go {
+    color: var(--surface);
+    background: var(--link);
+    border-color: var(--link);
+  }
+
+  /* ---- 店メモ / 店情報（共通の見た目） ---- */
+  .memo, .info-text {
+    border-left: 4px solid var(--memoline);
+    border-radius: 0 8px 8px 0;
+    padding: 8px 10px;
+    font-size: 16px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .memo { background: var(--memo); }
+  .info-text { background: var(--info); border-left-color: var(--infoline); }
+
+  .memo-empty { font-size: 14px; color: var(--muted); }
+  .memo-time { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+  textarea, .field {
+    width: 100%;
+    padding: 9px 11px;
+    font-family: inherit;
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--memo);
+    border: 1px solid var(--memoline);
+    border-radius: 8px;
+  }
+
+  textarea { min-height: 76px; resize: vertical; }
+
+  .field { background: var(--bg); border-color: var(--line); }
+  .field::placeholder { color: var(--muted); }
+
+  .memo-foot { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+  .note { font-size: 13px; color: var(--muted); }
+
+  .stats {
+    display: flex;
+    align-items: stretch;
+    border-left: 4px solid var(--line);
+    padding-left: 10px;
+  }
+  .stats.good { border-left-color: var(--good); }
+  .stats.warn { border-left-color: var(--warn); }
+
+  .stat { flex: 1 1 0; }
+  .stat + .stat { padding-left: 6px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -.03em;
+    line-height: 1.15;
+    white-space: nowrap;
+  }
+  .stats.good .rate .v { color: var(--good); }
+  .stats.warn .rate .v { color: var(--warn); }
+
+  .sub { margin-top: 6px; font-size: 15px; color: var(--muted); }
+
+  .tags { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+  }
+
+  /* ---- 配達完了の記録 ---- */
+  .done { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .btn.finish {
+    display: block;
+    width: 100%;
+    padding: 13px 12px;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--surface);
+    background: var(--good);
+    border-color: var(--good);
+    border-radius: 10px;
+  }
+  .btn.finish:disabled { opacity: .5; }
+  .done-ok { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; }
+  .done-ok b { color: var(--good); font-size: 16px; }
+  .done .note { margin-top: 4px; }
+
+  /* ---- 下の入力パネル（ピック店名・配達完了・種別・実績・左右移動） ---- */
+  .dock { margin-top: 8px; }
+  .dock .block { padding: 8px 12px; }
+  .dock-pick {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 12px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .dock-pick .tagpick {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--link);
+    background: var(--pick);
+    border: 1px solid var(--pickline);
+    border-radius: 6px;
+    padding: 1px 6px;
+  }
+  .dock-pick .dist { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
+  .dock-pick .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 17px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dock .nav { border-bottom: 0; border-top: 1px solid var(--line); }
+
+  /* ---- 案件の種別（買い物代行） ---- */
+  .kind { display: flex; align-items: center; gap: 10px; font-size: 15px; padding: 4px 0; }
+  .kind input { width: 22px; height: 22px; margin: 0; }
+
+  /* ---- 実績の入力（Uberの売り上げ状況を見て） ---- */
+  .act-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .act-row input {
+    width: 62px;
+    padding: 9px 8px;
+    font-size: 16px; /* 16px未満だとiPhoneで入力時に拡大される */
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .act-row .unit { color: var(--muted); font-size: 14px; }
+
+  .empty {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .verbar {
+    margin-top: 8px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    opacity: .7;
+  }
+
+  .finder .row { margin-top: 6px; }
+  .finder .field { flex: 1 1 auto; min-width: 0; }
+
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="card"><div class="empty">読み込んでいます</div></div>
+
+  <div class="card finder">
+    <div class="block">
+      <div class="label">住所検索</div>
+      <form id="finderForm">
+        <div class="row">
+          <input class="field" id="finderInput" type="text" inputmode="search"
+                 placeholder="住所や施設名を入力" autocomplete="off">
+          <button class="btn go" type="submit">自転車ルート</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card dock" id="dock" hidden>
+    <div class="dock-pick" id="dPick"></div>
+    <div class="done" id="doneBlock"></div>
+    <div class="block">
+      <div id="kindBlock"></div>
+      <div id="actualBlock" style="margin-top:8px"></div>
+    </div>
+    <div class="nav">
+      <button id="dPrev" aria-label="1件前">&#8592;</button>
+      <div class="stamp" id="dStamp"></div>
+      <button id="dNext" aria-label="1件後">&#8594;</button>
+    </div>
+  </div>
+
+  <div class="verbar" id="verbar">ui v<span id="uiVer"></span></div>
+</div>
+
+<script>
+/* GASのデプロイURL（Shortcutsのpostと同じもの） */
+var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
+var UI_VERSION = '2026-10-22-02';
+
+var HISTORY = [];
+var MEMOS = {};
+var INFOS = {};
+
+var RATE_GOOD = 1500;
+var RATE_WARN = 1250;
+
+var idx = 0;
+var editing = false;
+var card = document.getElementById('card');
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function yen(n) {
+  return n == null ? '—' : '¥' + Number(n).toLocaleString('ja-JP');
+}
+
+function mapsUrl(q) {
+  return 'https://www.google.com/maps/dir/?api=1&destination='
+    + encodeURIComponent(q) + '&travelmode=bicycling';
+}
+
+function searchUrl(q) {
+  return 'https://www.google.com/search?q=' + encodeURIComponent(q);
+}
+
+/* ショートカット「ナビタイムコピー」（要事前作成: 入力を受け取り→クリップボードにコピー→
+   配達ナビタイムを開く、の3ステップ）にテキストを渡して実行する */
+function navitimeUrl(text) {
+  return 'shortcuts://run-shortcut?name=' + encodeURIComponent('ナビタイムコピー')
+    + '&input=text&text=' + encodeURIComponent(text);
+}
+
+function shortTs(ts) {
+  var m = String(ts || '').match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})$/);
+  return m ? (m[1] + '/' + m[2] + ' ' + m[3]) : (ts || '');
+}
+
+function rateClass(rate) {
+  if (rate == null) return '';
+  if (rate >= RATE_GOOD) return 'good';
+  if (rate < RATE_WARN) return 'warn';
+  return '';
+}
+
+function callApi(action, args) {
+  return fetch(API_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: action, args: args })
+  }).then(function (r) { return r.json(); });
+}
+
+/* data-copy属性に入れた文字列をコピーする。属性経由にするのはエスケープを一箇所に集約するため */
+function copyText(btn, text) {
+  var reset = function () {
+    btn.classList.remove('copied');
+    btn.textContent = '⧉';
+  };
+
+  var done = function (ok) {
+    btn.classList.toggle('copied', ok);
+    btn.textContent = ok ? '✓' : '✕';
+    setTimeout(reset, 1200);
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    return;
+  }
+
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    done(document.execCommand('copy'));
+  } catch (err) {
+    done(false);
+  }
+  document.body.removeChild(ta);
+}
+
+function stopBlock(kind, label, text, extraHtml) {
+  var dotLabel = kind === 'pick' ? 'ピック' : 'ドロップ';
+  return '<div class="stop ' + kind + '">'
+    +   '<div class="label"><span class="dot"></span>' + dotLabel + '</div>'
+    +   '<div class="stop-text">'
+    +     '<p>' + esc(text) + '</p>'
+    +     '<button class="copy" type="button" data-copy="' + esc(text) + '" aria-label="' + dotLabel + 'をコピー">⧉</button>'
+    +   '</div>'
+    +   (extraHtml || '')
+    + '</div>';
+}
+
+/* 店名のローマ字部分（かな・漢字を含まない単語）を表示から取り除く。
+   検索・ルート用のURLは元の店名（ローマ字込み）のまま使うので、精度には影響しない。 */
+function displayStoreName(store) {
+  var parts = String(store || '').split(' ').filter(function (w) {
+    return /[ぁ-んァ-ヶ一-龠]/.test(w);
+  });
+  return parts.length ? parts.join(' ') : store;
+}
+
+function render() {
+  if (!HISTORY.length) {
+    card.innerHTML = '<div class="empty">まだ履歴がありません。<br>配達リクエストをキャプチャすると、ここに残ります。</div>';
+    var dk = document.getElementById('dock');
+    if (dk) dk.hidden = true;
+    return;
+  }
+
+  var d = HISTORY[idx];
+  var perKm = (d.price != null && d.km) ? Math.round(d.price / d.km) : null;
+  var perMin = (d.price != null && d.minutes) ? Math.round(d.price / d.minutes) : null;
+  var cls = rateClass(d.hourlyRate);
+
+  var tags = [];
+  if (d.multiplier > 1) tags.push('×' + d.multiplier + ' 同時配達');
+  if (d.additional) tags.push('追加配達');
+
+  var html = '';
+
+  html += '<div class="nav">'
+        +   '<button id="prev" aria-label="1件前">&#8592;</button>'
+        +   '<div class="stamp"><b>' + esc(shortTs(d.ts)) + '</b>'
+        +     (idx + 1) + ' / ' + HISTORY.length + '</div>'
+        +   '<button id="next" aria-label="1件後">&#8594;</button>'
+        + '</div>';
+
+  var pickExtra = '<div class="row">'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(mapsUrl(d.store + ' ' + (d.address || ''))) + '">自転車ルート</a>'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(searchUrl(d.store)) + '">Googleで検索</a>'
+    +   '<a class="btn" href="'
+    +     esc(navitimeUrl(displayStoreName(d.store))) + '">ナビタイムで開く</a>'
+    + '</div>';
+  html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra);
+
+  html += '<div class="block" id="infoBlock"></div>';
+  html += '<div class="block" id="memoBlock"></div>';
+
+  var dropExtra = '<div class="row">'
+    +   '<a class="btn" target="_blank" rel="noopener" href="'
+    +     esc(mapsUrl(d.address)) + '">自転車ルート</a>'
+    +   '<a class="btn" href="'
+    +     esc(navitimeUrl(d.address)) + '">ナビタイムで開く</a>'
+    + '</div>';
+  html += stopBlock('drop', 'ドロップ', d.address, dropExtra);
+
+  html += '<div class="block">'
+        +   '<div class="stats ' + cls + '">'
+        +     '<div class="stat"><div class="k">報酬</div><div class="v">' + yen(d.price) + '</div></div>'
+        +     '<div class="stat rate"><div class="k">時給換算</div><div class="v">' + yen(d.hourlyRate) + '</div></div>'
+        +     '<div class="stat"><div class="k">1kmあたり</div><div class="v">' + yen(perKm) + '</div></div>'
+        +     '<div class="stat"><div class="k">1分あたり</div><div class="v">' + yen(perMin) + '</div></div>'
+        +   '</div>'
+        +   '<div class="sub">'
+        +     (d.minutes != null ? d.minutes + '分' : '—')
+        +     ' ・ ' + (d.km != null ? d.km + 'km' : '—')
+        +   '</div>';
+
+  if (tags.length) {
+    html += '<div class="tags">';
+    tags.forEach(function (t) { html += '<span class="tag">' + esc(t) + '</span>'; });
+    html += '</div>';
+  }
+
+  html += '<div id="elevRow" style="margin-top:8px"></div>';
+
+  if (d.imageId || d.id) {
+    html += '<div class="row" style="margin-top:8px;justify-content:space-between">'
+          + (d.imageId
+              ? '<a class="btn plain" target="_blank" rel="noopener" href="'
+                + 'https://drive.google.com/file/d/' + esc(d.imageId) + '/view">キャプチャを開く</a>'
+              : '<span></span>')
+          + '<button class="btn plain danger" id="delBtn" type="button">この記録を削除</button>'
+          + '</div>';
+  }
+
+  html += '</div>';
+
+  card.className = 'card swap';
+  card.innerHTML = html;
+
+  var prev = document.getElementById('prev');
+  var next = document.getElementById('next');
+  prev.disabled = (idx >= HISTORY.length - 1);
+  next.disabled = (idx <= 0);
+  prev.onclick = function () { go(1, 'top'); };
+  next.onclick = function () { go(-1, 'top'); };
+
+  renderDock();
+
+  card.querySelectorAll('.copy').forEach(function (btn) {
+    btn.onclick = function () { copyText(btn, btn.getAttribute('data-copy')); };
+  });
+
+  renderDone();
+  renderKind();
+  renderActual();
+  renderInfo();
+  renderElev();
+  renderMemo();
+
+  var delBtn = document.getElementById('delBtn');
+  if (delBtn) delBtn.onclick = function () { deleteEntry(d); };
+}
+
+/* ---- 実績の入力（Uberの売り上げ状況に出る所要時間・距離を、見ながら手で入れる） ---- */
+
+/* ---- 案件の種別（買い物代行は、時間のかかり方が違うので分けて記録する） ---- */
+
+function renderKind() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('kindBlock');
+  if (!el) return;
+
+  var key = d.id || d.imageId;
+  if (!key) { el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  el.innerHTML = '<label class="kind"><input type="checkbox" id="kindShop"' + (d.kind === '買い物代行' ? ' checked' : '') + '>'
+    + '<span>買い物代行（店内で品物を選んで購入）</span></label>'
+    + '<div class="note" id="kindNote">' + (d.itemTypes ? esc('品物 ' + d.itemTypes + '種・' + d.itemCount + '点') : '') + '</div>';
+
+  document.getElementById('kindShop').onchange = function () {
+    var box = this;
+    var want = box.checked ? '買い物代行' : '';
+    var note = document.getElementById('kindNote');
+    box.disabled = true;
+    callApi('setKind', [key, want])
+      .then(function (r) {
+        box.disabled = false;
+        if (r && r.status === 'ok') {
+          d.kind = r.kind;
+          if (note) note.textContent = (r.sheet === 'ok' || r.sheet === 'notfound')
+            ? (d.itemTypes ? '品物 ' + d.itemTypes + '種・' + d.itemCount + '点' : '')
+            : '（シートには未反映）';
+        } else {
+          box.checked = !box.checked;
+          if (note) note.textContent = '保存できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+        }
+      })
+      .catch(function () {
+        box.disabled = false;
+        box.checked = !box.checked;
+        if (note) note.textContent = '保存できませんでした（通信エラー）';
+      });
+  };
+}
+
+/* 追加配達は、Uberの数字が「足された先の記録」と合算で出る。実績は、足された先の記録に入れる */
+
+function entryTime(e) {
+  return parseSec(e.reqAt || (e.ts + ':00'));
+}
+
+/** 追加配達 i が足された先（直前の「追加ではない」記録、90分以内）の番号。無ければ -1 */
+function headIndexOf(i) {
+  var e = HISTORY[i];
+  if (!e || !e.additional) return -1;
+  var t = entryTime(e);
+  for (var j = i + 1; j < HISTORY.length; j++) {
+    if (HISTORY[j].additional) continue;
+    var tj = entryTime(HISTORY[j]);
+    return (t && tj && t >= tj && (t - tj) <= 90 * 60000) ? j : -1;
+  }
+  return -1;
+}
+
+/** 記録 i に足された追加配達の番号（新しい順）。無ければ空 */
+function followerIndexesOf(i) {
+  var out = [];
+  for (var j = 0; j < i; j++) {
+    if (headIndexOf(j) === i) out.push(j);
+  }
+  return out;
+}
+
+function yen(n) {
+  return Math.round(n).toLocaleString('ja-JP') + '円';
+}
+
+function renderActual() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('actualBlock');
+  if (!el) return;
+
+  var key = d.id || d.imageId;
+  if (!key) { el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  // ---- 追加配達：実績は、足された先の記録に入れる ----
+  if (d.additional) {
+    var h = headIndexOf(idx);
+    if (h >= 0) {
+      var head = HISTORY[h];
+      var done = (head.actualMin != null && head.actualMin !== '')
+        ? '合算の実績：' + (Math.round(head.actualMin * 10) / 10) + '分' + (head.actualKm != null && head.actualKm !== '' ? '・' + head.actualKm + 'km' : '') + '（入力済み）'
+        : 'まだ入力されていません';
+      el.innerHTML = '<div class="label">実績</div>'
+        + '<div class="note">追加配達です。Uberの所要時間・距離・報酬は、足された先の記録（'
+        + esc(shortTs(head.ts) + ' ' + displayStoreName(head.store)) + '）と合算で出ます。実績は、そちらの記録に入れてください。</div>'
+        + '<div class="note" style="margin-top:4px">' + esc(done) + '</div>'
+        + '<div class="row" style="margin-top:6px"><button class="btn" id="goHead" type="button">足された先の記録を開く</button></div>';
+      document.getElementById('goHead').onclick = function () {
+        idx = h;
+        editing = false;
+        render();
+        alignScroll('bottom');
+      };
+      return;
+    }
+  }
+
+  // ---- ふつうの記録（追加配達が足されていれば、合算で比べる） ----
+  var fol = followerIndexesOf(idx);
+  var qPrice = d.price || 0;
+  var qMin = d.minutes || 0;
+  var qKm = d.km || 0;
+  var folLines = [];
+  fol.forEach(function (j) {
+    var f = HISTORY[j];
+    qPrice += f.price || 0;
+    qMin += f.minutes || 0;
+    qKm += f.km || 0;
+    folLines.push('+' + yen(f.price || 0) + '（' + shortTs(f.ts) + ' ' + displayStoreName(f.store) + '）');
+  });
+
+  var has = d.actualMin != null && d.actualMin !== '';
+  var mm = '', ss = '';
+  if (has) {
+    var total = Math.round(d.actualMin * 60);
+    mm = Math.floor(total / 60);
+    ss = total % 60;
+  }
+  var km = (d.actualKm != null && d.actualKm !== '') ? d.actualKm : '';
+
+  var info = '';
+  if (fol.length) {
+    info = '<div class="note" style="margin-bottom:6px">追加配達あり ' + esc(folLines.join(' ')) + '。Uberの数字は合算です（報酬 '
+      + esc(yen(qPrice)) + '）。</div>';
+  }
+
+  var diff = '';
+  if (has) {
+    var dm = Math.round((d.actualMin - qMin) * 10) / 10;
+    diff = (fol.length ? '合算で ' : '') + '提示' + (qMin ? Math.round(qMin) + '分' : '—') + ' → 実績'
+         + (Math.round(d.actualMin * 10) / 10) + '分（' + (dm >= 0 ? '+' : '') + dm + '分）';
+    if (d.actualKm != null && d.actualKm !== '' && qKm) {
+      var dk = Math.round((d.actualKm - qKm) * 100) / 100;
+      diff += '、' + d.actualKm + 'km（' + (dk >= 0 ? '+' : '') + dk + 'km）';
+    }
+  }
+
+  el.innerHTML = '<div class="label">実績（Uberの売り上げ状況を見て入力）</div>'
+    + info
+    + '<div class="act-row">'
+    +   '<input id="actMin" type="number" inputmode="numeric" min="0" placeholder="分" value="' + esc(String(mm)) + '">'
+    +   '<span class="unit">分</span>'
+    +   '<input id="actSec" type="number" inputmode="numeric" min="0" max="59" placeholder="秒" value="' + esc(String(ss)) + '">'
+    +   '<span class="unit">秒</span>'
+    +   '<input id="actKm" type="number" inputmode="decimal" step="0.01" min="0" placeholder="km" value="' + esc(String(km)) + '">'
+    +   '<span class="unit">km</span>'
+    +   '<button class="btn" id="actSave" type="button">' + (has ? '更新' : '保存') + '</button>'
+    + '</div>'
+    + '<div class="note" id="actNote">' + esc(diff) + '</div>';
+
+  document.getElementById('actSave').onclick = function () { saveActual(d); };
+}
+
+function saveActual(d) {
+  var min = document.getElementById('actMin').value;
+  var sec = document.getElementById('actSec').value;
+  var km = document.getElementById('actKm').value;
+  var note = document.getElementById('actNote');
+  var btn = document.getElementById('actSave');
+
+  if (min === '') {
+    if (note) note.textContent = '分を入れてください';
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (note) note.textContent = '保存しています';
+
+  callApi('saveActual', [d.id || d.imageId, min, sec, km])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        d.actualMin = r.actualMin;
+        d.actualKm = r.actualKm;
+        if (HISTORY[idx] === d) {
+          renderActual();
+          if (r.sheet !== 'ok') {
+            var n = document.getElementById('actNote');
+            if (n) n.textContent += '（シートには未反映）';
+          }
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        if (note) note.textContent = '保存できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      if (note) note.textContent = '保存できませんでした（通信エラー）';
+    });
+}
+
+/* ---- 無効な記録の削除（履歴とシートの両方から消える。元に戻せない） ---- */
+
+function deleteEntry(d) {
+  var label = shortTs(d.ts) + ' ' + displayStoreName(d.store);
+  if (!confirm('この記録を削除しますか？\n' + label + '\n\n履歴とシートから消えます。元には戻せません。')) return;
+
+  var btn = document.getElementById('delBtn');
+  if (btn) btn.disabled = true;
+
+  callApi('deleteEntry', [d.id || d.imageId])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        var i = HISTORY.indexOf(d);
+        if (i >= 0) HISTORY.splice(i, 1);
+        if (idx >= HISTORY.length) idx = Math.max(HISTORY.length - 1, 0);
+        editing = false;
+        render();
+        if (r.sheet === 'none' || r.sheet === 'error') {
+          alert('履歴から削除しました。シートには反映できていません（シートの行は手で消してください）。');
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        alert('削除できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー'));
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      alert('削除できませんでした（通信エラー）');
+    });
+}
+
+function go(step, align) {
+  if (editing && !confirm('編集中のメモを破棄して移動しますか？')) return;
+  var n = idx + step;
+  if (n < 0 || n >= HISTORY.length) return;
+  editing = false;
+  idx = n;
+  render();
+  alignScroll(align);
+}
+
+/* ---- 下のパネル：移動したあとも、パネルが同じ高さに来るようにスクロールを揃える ---- */
+
+var stickBottomUntil = 0;
+
+function alignScroll(align) {
+  if (align === 'bottom') {
+    stickBottomUntil = Date.now() + 1500; // 店情報などが後から読み込まれて高さが変わっても、下に揃え直す
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  } else if (align === 'top') {
+    stickBottomUntil = 0;
+    window.scrollTo(0, 0);
+  }
+}
+
+if (window.ResizeObserver) {
+  new ResizeObserver(function () {
+    if (Date.now() < stickBottomUntil) window.scrollTo(0, document.documentElement.scrollHeight);
+  }).observe(document.querySelector('.wrap'));
+}
+
+function renderDock() {
+  var dock = document.getElementById('dock');
+  if (!dock) return;
+  if (!HISTORY.length) { dock.hidden = true; return; }
+  dock.hidden = false;
+
+  var d = HISTORY[idx];
+  document.getElementById('dPick').innerHTML =
+    '<span class="tagpick">ピック</span><span class="name">' + esc(displayStoreName(d.store)) + '</span>'
+    + (d.pickupKm != null ? '<span class="dist">直線' + esc(String(d.pickupKm)) + 'km</span>' : '');
+  document.getElementById('dStamp').innerHTML =
+    '<b>' + esc(shortTs(d.ts)) + '</b>' + (idx + 1) + ' / ' + HISTORY.length;
+
+  var p = document.getElementById('dPrev');
+  var n = document.getElementById('dNext');
+  p.disabled = (idx >= HISTORY.length - 1);
+  n.disabled = (idx <= 0);
+  p.onclick = function () { go(1, 'bottom'); };
+  n.onclick = function () { go(-1, 'bottom'); };
+}
+
+/* ---- 配達完了の記録（時刻を残し、受信からの所要時間を出す） ---- */
+
+function parseSec(s) {
+  var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  var t = new Date(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + (m[6] || '00') + '+09:00');
+  return isNaN(t.getTime()) ? null : t;
+}
+
+function hmOf(s) {
+  var m = String(s || '').match(/(\d{2}:\d{2})(?::\d{2})?$/);
+  return m ? m[1] : '';
+}
+
+function renderDone() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('doneBlock');
+  if (!el) return;
+
+  if (!(d.id || d.imageId)) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+
+  if (d.doneAt) {
+    var a = parseSec(d.reqAt || (d.ts + ':00'));
+    var b = parseSec(d.doneAt);
+    var mins = (a && b) ? Math.round((b - a) / 6000) / 10 : null;
+
+    el.innerHTML = '<div class="done-ok"><b>完了 ' + esc(hmOf(d.doneAt)) + '</b>'
+      + (mins != null ? '<span>（受信から' + mins + '分）</span>' : '')
+      + '<button class="btn plain" id="doneUndo" type="button">取り消し</button></div>'
+      + '<div class="note" id="doneNote"></div>';
+    document.getElementById('doneUndo').onclick = function () { sendDone(d, 'undoDone'); };
+    return;
+  }
+
+  el.innerHTML = '<button class="btn finish" id="doneBtn" type="button">配達完了を記録</button>'
+    + '<div class="note" id="doneNote"></div>';
+  document.getElementById('doneBtn').onclick = function () { sendDone(d, 'markDone'); };
+}
+
+function sendDone(d, action) {
+  var btn = document.getElementById('doneBtn') || document.getElementById('doneUndo');
+  var note = document.getElementById('doneNote');
+  if (btn) btn.disabled = true;
+  if (note) note.textContent = '記録しています';
+
+  callApi(action, [d.id || d.imageId])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        d.doneAt = r.doneAt || '';
+        if (!d.reqAt && r.reqAt) d.reqAt = r.reqAt;
+        if (HISTORY[idx] === d) {
+          renderDone();
+          if (r.sheet !== 'ok') {
+            var n = document.getElementById('doneNote');
+            if (n) n.textContent = 'シートには未記録（履歴には記録済み）';
+          }
+        }
+      } else {
+        if (btn) btn.disabled = false;
+        if (note) note.textContent = '記録できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー');
+      }
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      if (note) note.textContent = '記録できませんでした（通信エラー）';
+    });
+}
+
+/* ---- 高低差（ピック→ドロップ、配達ごとにキャッシュ） ---- */
+
+function elevText(diff) {
+  return (diff > 0 ? '+' : '') + diff + 'm';
+}
+
+function renderElev() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('elevRow');
+  if (!el) return;
+
+  if (d.elevResult) {
+    showElev(el, d, d.elevResult);
+    return;
+  }
+
+  el.innerHTML = '<button class="btn plain" id="elevFetch">高低差を調べる</button>';
+  document.getElementById('elevFetch').onclick = function () { fetchElev(d, false); };
+}
+
+function showElev(el, d, r) {
+  var html = '<span class="note">高低差 ' + esc(elevText(r.diff)) + '</span> '
+    + '<button class="btn plain" id="elevRedo">調べ直す</button>';
+
+  if (r.placeName || r.placeAddress) {
+    html += '<div class="note" style="margin-top:4px">確認: ' + esc(r.placeName || '')
+      + (r.placeAddress ? '（' + esc(r.placeAddress) + '）' : '') + '</div>';
+  }
+
+  if (r.suspicious) {
+    html += '<div class="note" style="color:var(--warn);margin-top:4px">'
+      + '⚠ 店の特定がズレている可能性があります'
+      + (r.straightKm != null ? '（直線約' + esc(r.straightKm) + 'km、配達距離約' + esc(d.km) + 'km）' : '')
+      + '</div>';
+  }
+
+  el.innerHTML = html;
+  document.getElementById('elevRedo').onclick = function () { fetchElev(d, true); };
+}
+
+function fetchElev(d, refresh) {
+  var el = document.getElementById('elevRow');
+  el.innerHTML = '<span class="note">調べています…</span>';
+
+  callApi(refresh ? 'refreshElevation' : 'elevation', [d.store, d.address, d.km])
+    .then(function (r) {
+      if (r && r.status === 'found') {
+        d.elevResult = r;
+        if (HISTORY[idx] === d) showElev(el, d, r);
+      } else if (r && r.status === 'nokey') {
+        el.innerHTML = '<span class="note">地図APIキーが未設定です</span>';
+      } else if (r && r.status === 'geofail') {
+        el.innerHTML = '<span class="note">' + esc(r.message || '場所を特定できませんでした') + '</span>';
+      } else {
+        el.innerHTML = '<span class="note">取得できませんでした: '
+          + esc((r && r.message) || (r && r.status) || '不明なエラー') + '</span>';
+      }
+    })
+    .catch(function () {
+      el.innerHTML = '<span class="note">取得できませんでした（通信エラー）</span>';
+    });
+}
+
+/* ---- 店情報（Gemini・Web検索つき、店ごとにキャッシュ） ---- */
+
+function renderInfo() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('infoBlock');
+  if (!el) return;
+
+  var entry = INFOS[d.store];
+
+  if (entry && entry.text) {
+    el.innerHTML = '<div class="label">この店の情報</div>'
+      + '<div class="info-text">' + esc(entry.text) + '</div>'
+      + (entry.updatedAt ? '<div class="memo-time">' + esc(entry.updatedAt) + ' 取得</div>' : '')
+      + '<div class="row" style="margin-top:6px">'
+      +   '<button class="btn plain" id="infoRefresh">調べ直す</button>'
+      + '</div>';
+
+    document.getElementById('infoRefresh').onclick = function () {
+      fetchInfo(d, true);
+    };
+    return;
+  }
+
+  el.innerHTML = '<div class="label">この店の情報</div>'
+    + '<div class="row">'
+    +   '<button class="btn" id="infoFetch">何階か調べる</button>'
+    + '</div>';
+
+  document.getElementById('infoFetch').onclick = function () {
+    fetchInfo(d, false);
+  };
+}
+
+function fetchInfo(d, refresh) {
+  var el = document.getElementById('infoBlock');
+  el.innerHTML = '<div class="label">この店の情報</div><div class="note">調べています…</div>';
+
+  callApi(refresh ? 'refreshStoreInfo' : 'storeInfo', [d.store])
+    .then(function (r) {
+      if (r && r.status === 'found') {
+        INFOS[d.store] = { text: r.text, updatedAt: r.updatedAt };
+      } else if (r && r.status === 'nokey') {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">Gemini APIキーが未設定です</div>';
+        return;
+      } else if (r && r.status === 'notfound') {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">情報が見つかりませんでした</div>';
+        return;
+      } else {
+        el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした: '
+          + esc((r && r.message) || (r && r.status) || '不明なエラー') + '</div>';
+        return;
+      }
+      if (HISTORY[idx] === d) renderInfo();
+    })
+    .catch(function () {
+      el.innerHTML = '<div class="label">この店の情報</div><div class="note">取得できませんでした（通信エラー）</div>';
+    });
+}
+
+/* ---- 店メモ ---- */
+
+function renderMemo() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('memoBlock');
+  if (!el) return;
+
+  var entry = MEMOS[d.store];
+  var html = '<div class="label">この店のメモ</div>';
+
+  if (entry && entry.memo) {
+    html += '<div class="memo">' + esc(entry.memo) + '</div>';
+    if (entry.updatedAt) {
+      html += '<div class="memo-time">' + esc(entry.updatedAt) + ' 更新</div>';
+    }
+    html += '<div class="row" style="margin-top:6px">'
+          +   '<button class="btn" id="memoEdit">メモを編集</button>'
+          + '</div>';
+  } else {
+    html += '<p class="memo-empty">入口、駐輪場、受け取りの癖など、次に来たとき助かることを残せます。</p>'
+          + '<div class="row" style="margin-top:6px">'
+          +   '<button class="btn" id="memoEdit">メモを書く</button>'
+          + '</div>';
+  }
+
+  el.innerHTML = html;
+
+  var btn = document.getElementById('memoEdit');
+  if (btn) btn.onclick = openEditor;
+}
+
+function openEditor() {
+  var d = HISTORY[idx];
+  var el = document.getElementById('memoBlock');
+  var entry = MEMOS[d.store];
+  var current = (entry && entry.memo) || '';
+
+  editing = true;
+
+  el.innerHTML = '<div class="label">この店のメモ</div>'
+    + '<textarea id="memoText" placeholder="例：イオンモール3F フードコート奥。バイクは北側駐輪場が近い。"></textarea>'
+    + '<div class="memo-foot">'
+    +   '<button class="btn go" id="memoSave">保存</button>'
+    +   '<button class="btn plain" id="memoCancel">キャンセル</button>'
+    +   '<span class="note" id="memoNote"></span>'
+    + '</div>';
+
+  var ta = document.getElementById('memoText');
+  ta.value = current;
+  ta.focus();
+
+  document.getElementById('memoCancel').onclick = function () {
+    editing = false;
+    renderMemo();
+  };
+
+  document.getElementById('memoSave').onclick = function () {
+    var body = ta.value;
+    var note = document.getElementById('memoNote');
+    var save = document.getElementById('memoSave');
+
+    save.disabled = true;
+    note.textContent = '保存しています';
+
+    callApi('saveMemo', [d.store, body])
+      .then(function (r) {
+        if (r && r.status === 'saved') {
+          MEMOS[d.store] = r.entry;
+        } else if (r && r.status === 'deleted') {
+          delete MEMOS[d.store];
+        } else {
+          save.disabled = false;
+          note.textContent = '保存できませんでした';
+          return;
+        }
+        editing = false;
+        renderMemo();
+      })
+      .catch(function () {
+        save.disabled = false;
+        note.textContent = '保存できませんでした（通信エラー）';
+      });
+  };
+}
+
+/* ---- 住所検索（履歴と独立、単体の機能） ---- */
+
+(function () {
+  var form = document.getElementById('finderForm');
+  var input = document.getElementById('finderInput');
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var q = input.value.trim();
+    if (!q) return;
+    window.open(mapsUrl(q), '_blank', 'noopener');
+  });
+})();
+
+/* 左右スワイプでも移動できるようにする */
+(function () {
+  var x0 = null, y0 = null;
+
+  document.addEventListener('touchstart', function (e) {
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') { x0 = null; return; }
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchend', function (e) {
+    if (x0 == null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    var dy = e.changedTouches[0].clientY - y0;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 2) {
+      go(dx > 0 ? 1 : -1);
+    }
+    x0 = null;
+  }, { passive: true });
+})();
+
+document.getElementById('uiVer').textContent = UI_VERSION;
+
+/* 起動時にGASからデータを取得 */
+fetch(API_URL + '?data=1')
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    HISTORY = data.history || [];
+    MEMOS = data.memos || {};
+    INFOS = data.infos || {};
+    var verbar = document.getElementById('verbar');
+    if (verbar) verbar.textContent = 'ui v' + UI_VERSION + ' / app v' + (data.version || '?');
+    render();
+  })
+  .catch(function () {
+    card.innerHTML = '<div class="empty">データを取得できませんでした。<br>電波状況を確認するか、時間をおいて開き直してください。</div>';
+    var verbar = document.getElementById('verbar');
+    if (verbar) verbar.textContent = 'ui v' + UI_VERSION + ' / app 取得失敗';
+  });
+</script>
+</body>
+</html>
