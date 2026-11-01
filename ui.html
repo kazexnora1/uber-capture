@@ -118,6 +118,7 @@
     font-weight: 700;
     color: var(--link);
   }
+  .stop .label .pdist.unknown { font-size: 13px; font-weight: 400; color: var(--muted); }
   .stop .label .geobtn {
     margin-left: auto;
     min-height: 0;
@@ -390,7 +391,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-22-03';
+var UI_VERSION = '2026-10-22-04';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -540,8 +541,12 @@ function render() {
   var pickDist = '';
   if (d.pickupKm != null) {
     pickDist = '<span class="pdist">店まで直線 ' + esc(String(d.pickupKm)) + 'km</span>';
+  } else if (d.geoFail) {
+    pickDist = '<span class="pdist unknown">店の場所が不明</span>';
   } else if (d.lat != null && d.lng != null) {
-    pickDist = '<button class="btn geobtn" id="geoBtn" type="button">直線距離を出す</button>';
+    pickDist = d._geoBusy
+      ? '<span class="pdist unknown">距離を計算しています…</span>'
+      : '<button class="btn geobtn" id="geoBtn" type="button">直線距離を出す</button>';
   }
   html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra, pickDist);
 
@@ -616,6 +621,33 @@ function render() {
 
   var geoBtn = document.getElementById('geoBtn');
   if (geoBtn) geoBtn.onclick = function () { geoNow(d, geoBtn); };
+
+  autoGeo(d);
+}
+
+/* ---- 位置はあるのに距離が無い記録は、開いたときに自動で計算する（キャプチャ自体は遅くしない） ---- */
+
+function autoGeo(d) {
+  if (d.pickupKm != null || d.geoFail || d._geoBusy || d._geoManual) return;
+  if (d.lat == null || d.lng == null) return;
+
+  d._geoBusy = true;
+  render(); // 「距離を計算しています…」を出す
+
+  callApi('geoNow', [d.id || d.imageId])
+    .then(function (r) {
+      d._geoBusy = false;
+      if (r && r.status === 'ok') d.pickupKm = r.pickupKm;
+      else if (r && r.unresolved) d.geoFail = true;
+      if (HISTORY[idx] === d) render();
+    })
+    .catch(function () {
+      // 通信エラーのときは、ボタンを出して手で押せるようにする（自動ではこれ以上やり直さない）
+      d._geoBusy = false;
+      d.geoFail = false;
+      d._geoManual = true;
+      if (HISTORY[idx] === d) render();
+    });
 }
 
 /* ---- 店までの直線距離を、その場で計算する（初めての店は数秒かかる） ---- */
