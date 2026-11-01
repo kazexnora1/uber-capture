@@ -290,6 +290,7 @@
     border-radius: 6px;
     padding: 1px 6px;
   }
+  .dock-pick .dist { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
   .dock-pick .name {
     flex: 1 1 auto;
     min-width: 0;
@@ -377,7 +378,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-22-01';
+var UI_VERSION = '2026-10-22-02';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -864,7 +865,8 @@ function renderDock() {
 
   var d = HISTORY[idx];
   document.getElementById('dPick').innerHTML =
-    '<span class="tagpick">ピック</span><span class="name">' + esc(displayStoreName(d.store)) + '</span>';
+    '<span class="tagpick">ピック</span><span class="name">' + esc(displayStoreName(d.store)) + '</span>'
+    + (d.pickupKm != null ? '<span class="dist">直線' + esc(String(d.pickupKm)) + 'km</span>' : '');
   document.getElementById('dStamp').innerHTML =
     '<b>' + esc(shortTs(d.ts)) + '</b>' + (idx + 1) + ' / ' + HISTORY.length;
 
