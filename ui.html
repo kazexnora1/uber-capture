@@ -112,6 +112,18 @@
     gap: 6px;
     margin-bottom: 0;
   }
+  .stop .label .pdist {
+    margin-left: auto;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--link);
+  }
+  .stop .label .geobtn {
+    margin-left: auto;
+    min-height: 0;
+    padding: 4px 10px;
+    font-size: 13px;
+  }
   .stop .dot {
     width: 8px;
     height: 8px;
@@ -378,7 +390,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-22-02';
+var UI_VERSION = '2026-10-22-03';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -469,10 +481,10 @@ function copyText(btn, text) {
   document.body.removeChild(ta);
 }
 
-function stopBlock(kind, label, text, extraHtml) {
+function stopBlock(kind, label, text, extraHtml, labelExtra) {
   var dotLabel = kind === 'pick' ? 'ピック' : 'ドロップ';
   return '<div class="stop ' + kind + '">'
-    +   '<div class="label"><span class="dot"></span>' + dotLabel + '</div>'
+    +   '<div class="label"><span class="dot"></span>' + dotLabel + (labelExtra || '') + '</div>'
     +   '<div class="stop-text">'
     +     '<p>' + esc(text) + '</p>'
     +     '<button class="copy" type="button" data-copy="' + esc(text) + '" aria-label="' + dotLabel + 'をコピー">⧉</button>'
@@ -524,7 +536,14 @@ function render() {
     +   '<a class="btn" href="'
     +     esc(navitimeUrl(displayStoreName(d.store))) + '">ナビタイムで開く</a>'
     + '</div>';
-  html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra);
+  // 受信時の位置から店までの直線距離。計算済みなら表示、位置はあるが未計算ならボタンを出す
+  var pickDist = '';
+  if (d.pickupKm != null) {
+    pickDist = '<span class="pdist">店まで直線 ' + esc(String(d.pickupKm)) + 'km</span>';
+  } else if (d.lat != null && d.lng != null) {
+    pickDist = '<button class="btn geobtn" id="geoBtn" type="button">直線距離を出す</button>';
+  }
+  html += stopBlock('pick', 'ピック', displayStoreName(d.store), pickExtra, pickDist);
 
   html += '<div class="block" id="infoBlock"></div>';
   html += '<div class="block" id="memoBlock"></div>';
@@ -594,6 +613,32 @@ function render() {
 
   var delBtn = document.getElementById('delBtn');
   if (delBtn) delBtn.onclick = function () { deleteEntry(d); };
+
+  var geoBtn = document.getElementById('geoBtn');
+  if (geoBtn) geoBtn.onclick = function () { geoNow(d, geoBtn); };
+}
+
+/* ---- 店までの直線距離を、その場で計算する（初めての店は数秒かかる） ---- */
+
+function geoNow(d, btn) {
+  btn.disabled = true;
+  btn.textContent = '計算しています';
+  callApi('geoNow', [d.id || d.imageId])
+    .then(function (r) {
+      if (r && r.status === 'ok') {
+        d.pickupKm = r.pickupKm;
+        if (HISTORY[idx] === d) { render(); }
+      } else {
+        btn.disabled = false;
+        btn.textContent = '直線距離を出す';
+        alert('計算できませんでした: ' + ((r && (r.message || r.status)) || '不明なエラー'));
+      }
+    })
+    .catch(function () {
+      btn.disabled = false;
+      btn.textContent = '直線距離を出す';
+      alert('計算できませんでした（通信エラー）');
+    });
 }
 
 /* ---- 実績の入力（Uberの売り上げ状況に出る所要時間・距離を、見ながら手で入れる） ---- */
