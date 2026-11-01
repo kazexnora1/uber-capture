@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-21-02',
+  VERSION: '2026-10-22-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -16,7 +16,7 @@
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
   SHEET_NAME: 'requests',
-  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別', '品目数', '点数'],
+  SHEET_HEADERS: ['id', 'リクエスト時刻', '店名', '住所', '報酬', '分', 'km', '同時配達', '追加配達', '時給換算', '完了時刻', '実所要(分)', '無音(分)', '総額', 'チップ', 'メモ', '画像名', '実績分', '実績km', '完了(確定/推定)', 'まとめ先id', '種別', '品目数', '点数', '受信lat', '受信lng', '店lat', '店lng', '店まで直線(km)'],
 
   HISTORY_MAX: 20,
   GEMINI_MODEL: 'gemini-3.6-flash',
@@ -48,6 +48,7 @@
 
       var text = payload.text || '';
       var imageB64 = payload.image || '';
+      var geo = this.readGeo_(payload);
 
       var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
       var p = mod.parse(text) || {};
@@ -85,7 +86,7 @@
 
         if (res.ok && !duplicate) {
           this.saveLast(p);
-          var entry = this.appendHistory(p, img);
+          var entry = this.appendHistory(p, img, geo);
           if (entry) this.appendSheet(entry);
         }
       } finally {
@@ -146,6 +147,10 @@
   },
 
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.geo) {
+      return ContentService.createTextOutput(this.geoSummary_())
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
     if (e && e.parameter && e.parameter.reclass) {
       return ContentService.createTextOutput(this.reclassSheet())
         .setMimeType(ContentService.MimeType.TEXT);
@@ -471,6 +476,9 @@
       }
 
       var sheet = this.setSheetDone_(key, doneAt);
+      if (doneAt) {
+        try { this.fillGeo_(2); } catch (geoErr) { /* 距離の計算が失敗しても、完了の記録には影響させない */ }
+      }
       return {
         status: (hit || sheet === 'ok') ? 'ok' : 'notfound',
         doneAt: doneAt,
@@ -706,7 +714,7 @@
     }
   },
 
-  appendHistory: function (p, img) {
+  appendHistory: function (p, img, geo) {
     try {
       var history = this.readJson(this.HISTORY_FILE, []);
 
@@ -728,8 +736,12 @@
         additional: !!p.isAdditional,
         image: (img && img.name) || '',
         imageId: (img && img.id) || '',
-        doneAt: ''
+        doneAt: '',
+        lat: geo ? geo.lat : null,
+        lng: geo ? geo.lng : null
       };
+      // 店の座標がキャッシュにあれば、その場で直線距離まで出す（ネット通信はしない）
+      if (geo) this.applyGeo_(entry, this.geoCached_(entry.store));
       history.unshift(entry);
 
       this.writeJson(this.HISTORY_FILE, history.slice(0, this.HISTORY_MAX));
@@ -804,6 +816,129 @@
       return ContentService.createTextOutput(b64).setMimeType(ContentService.MimeType.TEXT);
     } catch (err) {
       return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+    }
+  },
+
+  /* ---------- 受信時の位置と、店までの直線距離 ---------- */
+
+  /**
+   * ショートカットから来た lat / lng を取り出す。日本の範囲外や数字でないものは捨てる。
+   * 位置は小数4桁（約11m）に丸めて持つ。
+   */
+  readGeo_: function (payload) {
+    var lat = Number(payload && payload.lat);
+    var lng = Number(payload && payload.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    if (lat < 20 || lat > 46 || lng < 122 || lng > 154) return null;
+    return { lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 };
+  },
+
+  /** 2点間の直線距離（km）。ハーバーサイン */
+  haversineKm_: function (lat1, lng1, lat2, lng2) {
+    var rad = Math.PI / 180;
+    var dLat = (lat2 - lat1) * rad;
+    var dLng = (lng2 - lng1) * rad;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+      + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 6371.0088 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  },
+
+  /** 店の座標がキャッシュ(places.json)にあれば返す。無ければ null（ネット通信はしない） */
+  geoCached_: function (store) {
+    var cache = this.readJson(this.PLACES_FILE, {});
+    return cache[this.normKey(store)] || null;
+  },
+
+  /** 店の座標と、受信位置からの直線距離（km、小数2桁）を entry に入れる */
+  applyGeo_: function (entry, place) {
+    if (!place || place.lat == null || place.lng == null) return;
+    if (entry.lat == null || entry.lng == null) return;
+    entry.storeLat = place.lat;
+    entry.storeLng = place.lng;
+    entry.pickupKm = Math.round(this.haversineKm_(entry.lat, entry.lng, place.lat, place.lng) * 100) / 100;
+  },
+
+  /**
+   * シートと履歴のうち、位置はあるが店までの距離が未計算の行を埋める。
+   * 店の座標がキャッシュに無いときだけ Places API を呼ぶ（limit 件まで）。
+   * 座標が見つからなかった店は「不明」を入れ、毎回やり直さないようにする。
+   */
+  fillGeo_: function (limit) {
+    var out = { filled: 0, unresolved: 0, remaining: 0, history: 0 };
+    var places = this.readJson(this.PLACES_FILE, {});
+    var calls = 0;
+    var self = this;
+
+    var lookup = function (store) {
+      var key = self.normKey(store);
+      if (places[key]) return places[key];
+      if (calls >= limit) return undefined; // 今回は見送り
+      calls++;
+      var pl = self.resolvePlace(store);
+      if (pl) places[key] = pl;
+      return pl || null;
+    };
+
+    var sh = this.getSheet_(false);
+    if (sh && sh.getLastRow() >= 2) {
+      var n = sh.getLastRow() - 1;
+      var stores = sh.getRange(2, 3, n, 1).getValues();
+      var geo = sh.getRange(2, 25, n, 5).getValues(); // lat, lng, 店lat, 店lng, 直線km
+      var touched = false;
+      for (var i = 0; i < n; i++) {
+        var g = geo[i];
+        if (g[0] === '' || g[1] === '' || g[4] !== '') continue;
+        var pl = lookup(String(stores[i][0]));
+        if (pl === undefined) { out.remaining++; continue; }
+        if (!pl || pl.lat == null) { g[4] = '不明'; out.unresolved++; touched = true; continue; }
+        g[2] = pl.lat;
+        g[3] = pl.lng;
+        g[4] = Math.round(this.haversineKm_(Number(g[0]), Number(g[1]), pl.lat, pl.lng) * 100) / 100;
+        out.filled++;
+        touched = true;
+      }
+      if (touched) sh.getRange(2, 25, n, 5).setValues(geo);
+    }
+
+    var history = this.readJson(this.HISTORY_FILE, []);
+    var hTouched = false;
+    for (var j = 0; j < history.length; j++) {
+      var h = history[j];
+      if (h.lat == null || h.pickupKm != null) continue;
+      var pl2 = places[this.normKey(h.store)];
+      if (!pl2) continue;
+      this.applyGeo_(h, pl2);
+      if (h.pickupKm != null) { out.history++; hTouched = true; }
+    }
+    if (hTouched) {
+      this.writeJson(this.HISTORY_FILE, history);
+      CacheService.getScriptCache().remove('data');
+    }
+    return out;
+  },
+
+  /** ?geo=1：未計算の店までの直線距離を、まとめて埋める（1回40店まで。残りがあればもう一度開く） */
+  geoSummary_: function () {
+    var lock = LockService.getScriptLock();
+    var got = false;
+    try {
+      lock.waitLock(20000);
+      got = true;
+    } catch (lockErr) {
+      // 続行
+    }
+    try {
+      var r = this.fillGeo_(40);
+      return 'OK: ' + r.filled + '件の距離を計算しました'
+        + (r.unresolved ? '\n店が見つからず「不明」にしたもの: ' + r.unresolved + '件' : '')
+        + (r.remaining ? '\nまだ残り: ' + r.remaining + '件（もう一度開いてください）' : '')
+        + (r.history ? '\n画面の履歴に反映: ' + r.history + '件' : '');
+    } catch (err) {
+      return 'NG: ' + err;
+    } finally {
+      if (got) {
+        try { lock.releaseLock(); } catch (releaseErr) { /* 無視 */ }
+      }
     }
   },
 
@@ -910,6 +1045,11 @@
       sh.getRange(r, 20).setFormula(f[2]);
       sh.getRange(r, 21).setValue(e.headId || '');
       sh.getRange(r, 22, 1, 3).setValues([[e.kind || '', e.itemTypes != null ? e.itemTypes : '', e.itemCount != null ? e.itemCount : '']]);
+      sh.getRange(r, 25, 1, 5).setValues([[
+        e.lat != null ? e.lat : '', e.lng != null ? e.lng : '',
+        e.storeLat != null ? e.storeLat : '', e.storeLng != null ? e.storeLng : '',
+        e.pickupKm != null ? e.pickupKm : ''
+      ]]);
       return true;
     } catch (err) {
       return false;
