@@ -1,1 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>リクエストの分布</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --bg: #e9edf0;
+    --surface: #ffffff;
+    --ink: #14202a;
+    --muted: #5b6c78;
+    --line: #c9d3da;
+    --link: #1f5fa8;
+    --good: #0e7a4f;
+    --warn: #b4441f;
+    --chip: #f1f4f6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    font-feature-settings: "tnum" 1;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 430px; margin: 0 auto; padding: 10px 8px calc(24px + env(safe-area-inset-bottom, 0px)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 10px; overflow: hidden; }
+  .sec { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .sec:last-child { border-bottom: 0; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .head b { font-size: 18px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .label { color: var(--muted); font-size: 12px; margin: 0 0 5px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .row + .label { margin-top: 10px; }
+
+  button {
+    font: inherit;
+    color: var(--ink);
+    background: var(--chip);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 7px 11px;
+    min-height: 34px;
+  }
+  button.on { color: #fff; background: var(--link); border-color: var(--link); }
+  button:disabled { opacity: .5; }
+  .seg { display: flex; }
+  .seg button { flex: 1 1 0; border-radius: 0; margin-left: -1px; padding: 7px 4px; font-size: 14px; }
+  .seg button:first-child { border-radius: 9px 0 0 9px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 9px 9px 0; }
+
+  #map { height: 52vh; min-height: 300px; background: #dfe6ea; }
+  .legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .legend .bar { flex: 1 1 auto; height: 10px; border-radius: 5px; }
+  .note { font-size: 13px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+  .note.warn { color: var(--warn); }
+  .empty { padding: 14px 12px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+  table.grid { width: 100%; border-collapse: separate; border-spacing: 2px; table-layout: fixed; }
+  table.grid th { font-size: 11px; font-weight: 400; color: var(--muted); padding: 2px 0; }
+  table.grid td {
+    text-align: center;
+    font-size: 12px;
+    padding: 9px 0;
+    border-radius: 5px;
+    background: var(--chip);
+    cursor: pointer;
+    border: 2px solid transparent;
+  }
+  table.grid td.sel { border-color: var(--ink); }
+  table.grid td.zero { color: #b9c3ca; }
+  table.grid th.rowh { width: 26px; text-align: center; color: var(--ink); font-size: 13px; }
+
+  .leaflet-popup-content { font-size: 13px; line-height: 1.5; margin: 10px 12px; }
+  .verbar { text-align: center; color: var(--muted); font-size: 11px; padding-top: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <div class="sec">
+      <div class="head"><b>リクエストの分布</b><span class="sub" id="status">読み込んでいます</span></div>
+      <div class="seg" id="modeSeg" style="margin-top:8px">
+        <button data-v="store" class="on">店の位置</button>
+        <button data-v="me">鳴ったときの自分の位置</button>
+      </div>
+      <div class="note" id="modeNote"></div>
+    </div>
+    <div id="map"></div>
+    <div class="sec">
+      <div class="legend"><span id="legLo"></span><div class="bar" id="legBar"></div><span id="legHi"></span></div>
+      <div class="note" id="mapNote"></div>
+      <div class="row" style="margin-top:8px"><button id="fitBtn" type="button">全体を表示</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec">
+      <div class="label">曜日</div>
+      <div class="row" id="dayChips"></div>
+      <div class="label">時間帯</div>
+      <div class="row" id="bandChips"></div>
+      <div class="label">種類</div>
+      <div class="row" id="kindChips"></div>
+      <div class="label">期間</div>
+      <div class="seg" id="periodSeg"></div>
+    </div>
+    <div class="sec">
+      <div class="label">地図のまとめ方（1つの丸にまとめる範囲）</div>
+      <div class="seg" id="gridSeg"></div>
+      <div class="label" style="margin-top:10px">丸の色</div>
+      <div class="seg" id="colorSeg"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec">
+      <div class="head"><b style="font-size:16px">曜日 × 時間帯</b><span class="sub">タップで絞り込み</span></div>
+      <div class="seg" id="tmetricSeg" style="margin:8px 0"></div>
+      <div id="gridTable"></div>
+      <div class="row" style="margin-top:8px"><button id="resetBtn" type="button">曜日・時間帯を全部に戻す</button></div>
+    </div>
+  </div>
+
+  <div class="card" id="importCard" hidden>
+    <div class="sec">
+      <div class="note" id="importNote" style="margin-top:0"></div>
+      <div class="row" style="margin-top:8px"><button id="importBtn" type="button">店の位置を取り込む</button></div>
+    </div>
+  </div>
+
+  <div class="verbar" id="verbar"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+var MAP_VERSION = '2026-10-23-01';
+var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
+
+var DOW = ['月', '火', '水', '木', '金', '土', '日'];
+var BANDS = [[0, 3], [3, 6], [6, 9], [9, 12], [12, 15], [15, 18], [18, 21], [21, 24]];
+var HOME = [35.698, 139.414]; // 立川駅あたり
+
+var ALL = [];        // 全件
+var META = { stores: 0, located: 0, notFound: 0 };
+var MAXDAY = 0;      // データにある一番新しい日（日数）
+
+var F = {
+  mode: 'store',
+  days: [true, true, true, true, true, true, true],
+  bands: [true, true, true, true, true, true, true, true],
+  kinds: { normal: true, shop: true },
+  period: 'all',
+  grid: 300,
+  color: 'rate',
+  tmetric: 'count'
+};
+
+var map = null, layer = null, fitNext = true;
+
+function $(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function yen(n) { return Math.round(n).toLocaleString('ja-JP') + '円'; }
+
+/* ---------- データ ---------- */
+
+function decode(r) {
+  var ts = r[0];
+  var y = +ts.slice(0, 4), m = +ts.slice(5, 7), d = +ts.slice(8, 10), h = +ts.slice(11, 13);
+  var utc = Date.UTC(y, m - 1, d);
+  return {
+    ts: ts,
+    day: Math.floor(utc / 86400000),
+    dow: (new Date(utc).getUTCDay() + 6) % 7, // 月=0 … 日=6
+    hour: h,
+    band: Math.floor(h / 3),
+    store: r[1],
+    shop: r[2] === 1,
+    price: r[3], min: r[4], km: r[5],
+    add: r[6] === 1,
+    sLat: r[7], sLng: r[8],
+    rLat: r[9], rLng: r[10],
+    act: r[11],
+    rate: (r[3] != null && r[4]) ? r[3] / r[4] * 60 : null
+  };
+}
+
+function loadData() {
+  $('status').textContent = '読み込んでいます';
+  return fetch(API_URL + '?pts=1')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      ALL = (d.rows || []).map(decode);
+      META = { stores: d.stores || 0, located: d.located || 0, notFound: d.notFound || 0 };
+      MAXDAY = ALL.reduce(function (a, p) { return Math.max(a, p.day); }, 0);
+      fitNext = true;
+      renderAll();
+    })
+    .catch(function () {
+      $('status').textContent = '取得できませんでした';
+      $('mapNote').textContent = '電波状況を確認して、開き直してください。';
+    });
+}
+
+/* ---------- 絞り込み ---------- */
+
+function passBase(p) {
+  if (p.shop ? !F.kinds.shop : !F.kinds.normal) return false;
+  if (F.period !== 'all' && p.day < MAXDAY - (F.period === '7' ? 6 : 29)) return false;
+  return true;
+}
+
+function passTime(p) { return F.days[p.dow] && F.bands[p.band]; }
+
+function filtered() { return ALL.filter(function (p) { return passBase(p) && passTime(p); }); }
+
+function allDaysBands() {
+  return F.days.every(Boolean) && F.bands.every(Boolean);
+}
+
+/* ---------- 地図 ---------- */
+
+function cellsOf(rows) {
+  var dLat = F.grid / 111000;
+  var dLng = F.grid / (111000 * Math.cos(35.7 * Math.PI / 180));
+  var m = {};
+  rows.forEach(function (p) {
+    var lat = F.mode === 'store' ? p.sLat : p.rLat;
+    var lng = F.mode === 'store' ? p.sLng : p.rLng;
+    if (lat == null || lng == null) return;
+    var k = Math.floor(lat / dLat) + ',' + Math.floor(lng / dLng);
+    var c = m[k] || (m[k] = { n: 0, sLat: 0, sLng: 0, price: 0, np: 0, rate: 0, nr: 0, min: 0, nm: 0, stores: {} });
+    c.n++; c.sLat += lat; c.sLng += lng;
+    if (p.price != null) { c.price += p.price; c.np++; }
+    if (p.rate != null) { c.rate += p.rate; c.nr++; }
+    if (p.min != null) { c.min += p.min; c.nm++; }
+    c.stores[p.store] = (c.stores[p.store] || 0) + 1;
+  });
+  return Object.keys(m).map(function (k) {
+    var c = m[k];
+    return {
+      n: c.n, lat: c.sLat / c.n, lng: c.sLng / c.n,
+      price: c.np ? c.price / c.np : null,
+      rate: c.nr ? c.rate / c.nr : null,
+      min: c.nm ? c.min / c.nm : null,
+      stores: c.stores
+    };
+  });
+}
+
+function pct(arr, q) {
+  if (!arr.length) return 0;
+  var s = arr.slice().sort(function (a, b) { return a - b; });
+  return s[Math.min(s.length - 1, Math.floor((s.length - 1) * q))];
+}
+
+function metricOf(c) { return F.color === 'rate' ? c.rate : F.color === 'price' ? c.price : c.n; }
+
+function colorAt(t) {
+  t = Math.max(0, Math.min(1, t));
+  if (F.color === 'count') return 'hsl(215,72%,' + (66 - t * 30) + '%)';
+  return 'hsl(' + (8 + t * 120) + ',70%,44%)'; // 低い=赤、高い=緑
+}
+
+function gradientCss() {
+  var stops = [];
+  for (var i = 0; i <= 4; i++) stops.push(colorAt(i / 4));
+  return 'linear-gradient(to right,' + stops.join(',') + ')';
+}
+
+function fmtMetric(v) {
+  if (v == null) return '—';
+  return F.color === 'count' ? Math.round(v) + '件' : yen(v) + (F.color === 'rate' ? '/時' : '');
+}
+
+function renderMap() {
+  var rows = filtered();
+  var cells = cellsOf(rows);
+  var withPos = rows.filter(function (p) { return (F.mode === 'store' ? p.sLat : p.rLat) != null; }).length;
+
+  if (map && window.L) {
+    layer.clearLayers();
+    var vals = cells.map(metricOf).filter(function (v) { return v != null; });
+    var lo = pct(vals, 0.1), hi = pct(vals, 0.9);
+    var pts = [];
+    cells.forEach(function (c) {
+      var v = metricOf(c);
+      var t = (v == null) ? 0.5 : (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+      var color = colorAt(t);
+      var top = Object.keys(c.stores).sort(function (a, b) { return c.stores[b] - c.stores[a]; }).slice(0, 3)
+        .map(function (s) { return esc(s) + '（' + c.stores[s] + '）'; }).join('<br>');
+      var html = '<b>' + c.n + '件</b><br>'
+        + '平均報酬 ' + (c.price != null ? yen(c.price) : '—') + '<br>'
+        + '平均時給（提示） ' + (c.rate != null ? yen(c.rate) : '—') + '<br>'
+        + '平均提示 ' + (c.min != null ? Math.round(c.min) + '分' : '—')
+        + (F.mode === 'store' && top ? '<hr style="border:0;border-top:1px solid #ddd">' + top : '');
+      L.circleMarker([c.lat, c.lng], {
+        radius: 5 + Math.sqrt(c.n) * 4.5, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.62
+      }).bindPopup(html).addTo(layer);
+      pts.push([c.lat, c.lng]);
+    });
+    if (fitNext) {
+      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [24, 24], maxZoom: 15 });
+      else map.setView(HOME, 12);
+      fitNext = false;
+    }
+    $('legBar').style.background = gradientCss();
+    $('legLo').textContent = vals.length ? fmtMetric(lo) : '';
+    $('legHi').textContent = vals.length ? fmtMetric(hi) : '';
+  }
+
+  var note = '表示 ' + rows.length + '件（全' + ALL.length + '件）';
+  if (F.mode === 'store') note += ' ／ 位置のある店 ' + META.located + '/' + META.stores;
+  else note += ' ／ 位置のある記録 ' + withPos + '件';
+  $('mapNote').className = 'note';
+  $('mapNote').textContent = note;
+  if (F.mode === 'me' && withPos === 0) {
+    $('mapNote').className = 'note warn';
+    $('mapNote').textContent = note + '。位置の記録は、ショートカットに位置を足した日以降のものだけです。溜まるまで、店の位置でご覧ください。';
+  }
+}
+
+/* ---------- 曜日 × 時間帯の表 ---------- */
+
+function statOf(rows) {
+  var n = rows.length, sp = 0, np = 0, sr = 0, nr = 0, sm = 0, nm = 0;
+  rows.forEach(function (p) {
+    if (p.price != null) { sp += p.price; np++; }
+    if (p.rate != null) { sr += p.rate; nr++; }
+    if (p.min != null) { sm += p.min; nm++; }
+  });
+  return { n: n, price: np ? sp / np : null, rate: nr ? sr / nr : null, min: nm ? sm / nm : null };
+}
+
+function tvalue(st) {
+  return F.tmetric === 'count' ? st.n : F.tmetric === 'price' ? st.price : F.tmetric === 'rate' ? st.rate : st.min;
+}
+
+function renderTable() {
+  var base = ALL.filter(passBase);
+  var cell = [], flat = [];
+  for (var d = 0; d < 7; d++) {
+    cell[d] = [];
+    for (var b = 0; b < 8; b++) {
+      var st = statOf(base.filter(function (p) { return p.dow === d && p.band === b; }));
+      cell[d][b] = st;
+      var v = tvalue(st);
+      if (v != null && st.n > 0) flat.push(v);
+    }
+  }
+  var lo = F.tmetric === 'count' ? 0 : pct(flat, 0.05), hi = pct(flat, 0.95);
+
+  var html = '<table class="grid"><tr><th class="rowh"></th>';
+  BANDS.forEach(function (bd) { html += '<th>' + bd[0] + '</th>'; });
+  html += '</tr>';
+  for (var d2 = 0; d2 < 7; d2++) {
+    html += '<tr><th class="rowh">' + DOW[d2] + '</th>';
+    for (var b2 = 0; b2 < 8; b2++) {
+      var s = cell[d2][b2], v2 = tvalue(s);
+      var cls = (!allDaysBands() && F.days[d2] && F.bands[b2]) ? ' sel' : '';
+      if (!s.n || v2 == null) { html += '<td class="zero' + cls + '" data-d="' + d2 + '" data-b="' + b2 + '">·</td>'; continue; }
+      var t = hi > lo ? Math.max(0, Math.min(1, (v2 - lo) / (hi - lo))) : 0.5;
+      var txt = F.tmetric === 'count' ? s.n : F.tmetric === 'min' ? Math.round(v2) : Math.round(v2);
+      var bg = 'rgba(31,95,168,' + (0.12 + t * 0.62).toFixed(2) + ')';
+      html += '<td class="' + cls.trim() + '" style="background:' + bg + ';color:' + (t > 0.55 ? '#fff' : 'var(--ink)') + '" data-d="' + d2 + '" data-b="' + b2 + '">' + txt + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</table>';
+  html += '<div class="note">列は時間帯の開始時刻（0＝0〜3時）。'
+    + (F.tmetric === 'count' ? '数字は件数。' : F.tmetric === 'price' ? '数字は平均報酬（円）。' : F.tmetric === 'rate' ? '数字は平均時給（提示の金額÷分、円/時）。' : '数字は平均の提示分。')
+    + '</div>';
+  $('gridTable').innerHTML = html;
+
+  Array.prototype.forEach.call($('gridTable').querySelectorAll('td'), function (td) {
+    td.onclick = function () {
+      var d = +td.getAttribute('data-d'), b = +td.getAttribute('data-b');
+      var only = F.days.filter(Boolean).length === 1 && F.days[d] && F.bands.filter(Boolean).length === 1 && F.bands[b];
+      if (only) { F.days = F.days.map(function () { return true; }); F.bands = F.bands.map(function () { return true; }); }
+      else { F.days = F.days.map(function (_, i) { return i === d; }); F.bands = F.bands.map(function (_, i) { return i === b; }); }
+      fitNext = true;
+      renderAll();
+    };
+  });
+}
+
+/* ---------- 操作部品 ---------- */
+
+function seg(el, items, current, onPick) {
+  el.innerHTML = '';
+  items.forEach(function (it) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it[1];
+    b.setAttribute('data-v', String(it[0]));
+    if (String(it[0]) === String(current)) b.className = 'on';
+    b.onclick = function () { onPick(it[0]); };
+    el.appendChild(b);
+  });
+}
+
+function chips(el, labels, flags, onToggle) {
+  el.innerHTML = '';
+  labels.forEach(function (lb, i) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = lb;
+    if (flags[i]) b.className = 'on';
+    b.onclick = function () { onToggle(i); };
+    el.appendChild(b);
+  });
+}
+
+function renderControls() {
+  seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
+  $('modeNote').textContent = F.mode === 'store'
+    ? 'リクエストが出た店の場所（過去分も含む）。'
+    : '鳴ったとき（キャプチャ時）の自分の位置。約110mに丸めています。';
+
+  chips($('dayChips'), DOW, F.days, function (i) {
+    F.days[i] = !F.days[i];
+    if (!F.days.some(Boolean)) F.days[i] = true; // 全部外れないようにする
+    fitNext = true; renderAll();
+  });
+  chips($('bandChips'), BANDS.map(function (b) { return b[0] + '–' + b[1]; }), F.bands, function (i) {
+    F.bands[i] = !F.bands[i];
+    if (!F.bands.some(Boolean)) F.bands[i] = true;
+    fitNext = true; renderAll();
+  });
+  chips($('kindChips'), ['通常の配達', '買い物代行'], [F.kinds.normal, F.kinds.shop], function (i) {
+    var key = i === 0 ? 'normal' : 'shop';
+    F.kinds[key] = !F.kinds[key];
+    if (!F.kinds.normal && !F.kinds.shop) F.kinds[key] = true;
+    fitNext = true; renderAll();
+  });
+  seg($('periodSeg'), [['all', '全期間'], ['30', '直近30日'], ['7', '直近7日']], F.period, function (v) { F.period = v; fitNext = true; renderAll(); });
+  seg($('gridSeg'), [[150, '150m'], [300, '300m'], [600, '600m'], [1000, '1km']], F.grid, function (v) { F.grid = +v; renderAll(); });
+  seg($('colorSeg'), [['rate', '時給'], ['price', '報酬'], ['count', '件数']], F.color, function (v) { F.color = v; renderAll(); });
+  seg($('tmetricSeg'), [['count', '件数'], ['price', '報酬'], ['rate', '時給'], ['min', '提示分']], F.tmetric, function (v) { F.tmetric = v; renderAll(); });
+}
+
+function renderImport() {
+  var pending = META.stores - META.located - META.notFound;
+  var card = $('importCard');
+  if (pending > 0) {
+    card.hidden = false;
+    $('importNote').textContent = '位置が未取得の店が約' + pending + '店あります。取り込むと、店の位置の地図に反映されます（Googleの地図APIを使うため、少し時間がかかります）。';
+  } else {
+    card.hidden = true;
+  }
+}
+
+function renderAll() {
+  renderControls();
+  renderMap();
+  renderTable();
+  renderImport();
+  $('status').textContent = ALL.length + '件';
+}
+
+/* ---------- 店の位置の取り込み（25店ずつ、終わるまで繰り返す） ---------- */
+
+function importStores() {
+  var btn = $('importBtn');
+  btn.disabled = true;
+  var done = 0;
+  (function step() {
+    fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: 'geocodeStores', args: [25] }) })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r || r.status !== 'ok') {
+          $('importNote').textContent = '取り込みを中断しました: ' + ((r && r.message) || '不明なエラー');
+          btn.disabled = false;
+          return;
+        }
+        done += r.resolved + r.notFound;
+        $('importNote').textContent = '取り込み中… 残り' + r.remaining + '店';
+        if (r.remaining > 0 && (r.resolved + r.notFound) > 0) step();
+        else { btn.disabled = false; loadData(); }
+      })
+      .catch(function () {
+        $('importNote').textContent = '通信エラーで中断しました。もう一度押すと、続きから取り込みます。';
+        btn.disabled = false;
+      });
+  })();
+}
+
+/* ---------- 起動 ---------- */
+
+$('verbar').textContent = 'map v' + MAP_VERSION;
+
+$('fitBtn').onclick = function () { fitNext = true; renderMap(); };
+$('resetBtn').onclick = function () {
+  F.days = F.days.map(function () { return true; });
+  F.bands = F.bands.map(function () { return true; });
+  fitNext = true;
+  renderAll();
+};
+$('importBtn').onclick = importStores;
+
+if (window.L) {
+  map = L.map('map', { zoomControl: true }).setView(HOME, 12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap contributors'
+  }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+} else {
+  $('map').innerHTML = '<div class="empty">地図の部品を読み込めませんでした。電波状況を確認して、開き直してください。</div>';
+}
+
+renderControls();
+loadData();
+</script>
+</body>
+</html>
 
