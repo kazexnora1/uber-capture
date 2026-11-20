@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-23-01',
+  VERSION: '2026-11-21-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -49,6 +49,11 @@
       var text = payload.text || '';
       var imageB64 = payload.image || '';
       var geo = this.readGeo_(payload);
+      // 診断用：位置が取れたか／取れなかった理由（受け取った生の値と項目名）をログに残す
+      var geoDiag = geo
+        ? '位置あり'
+        : ('位置なし lat=' + JSON.stringify(payload.lat) + ' lng=' + JSON.stringify(payload.lng)
+          + ' keys=' + Object.keys(payload).join(','));
 
       var mod = eval(this.loadSrc('logic', this.SRC_LOGIC));
       var p = mod.parse(text) || {};
@@ -79,9 +84,10 @@
         }
 
         if (duplicate) {
-          this.appendNote('重複キャプチャをスキップ: ' + (p.store || ''));
+          this.appendNote('重複キャプチャをスキップ: ' + (p.store || '') + ' [' + geoDiag + ']');
         } else {
           this.appendLog(res.ok, img.name || '(なし)', text, p);
+          if (!geo) this.appendNote('保存した記録に位置なし: ' + (p.store || '') + ' [' + geoDiag + ']');
         }
 
         if (res.ok && !duplicate) {
