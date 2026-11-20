@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-21-01',
+  VERSION: '2026-11-21-02',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -84,7 +84,9 @@
         }
 
         if (duplicate) {
-          this.appendNote('重複キャプチャをスキップ: ' + (p.store || '') + ' [' + geoDiag + ']');
+          // 二重送信の2回目だけに位置が入っていることがある。先に保存した記録に位置が無ければ、ここで補う
+          var filled = geo ? this.backfillGeoToLast_(geo) : false;
+          this.appendNote('重複キャプチャをスキップ: ' + (p.store || '') + ' [' + geoDiag + ']' + (filled ? ' → 前の記録に位置を補完' : ''));
         } else {
           this.appendLog(res.ok, img.name || '(なし)', text, p);
           if (!geo) this.appendNote('保存した記録に位置なし: ' + (p.store || '') + ' [' + geoDiag + ']');
@@ -126,6 +128,47 @@
 
       var diffMinutes = (Date.now() - lastTime.getTime()) / 60000;
       return diffMinutes >= 0 && diffMinutes <= 30;
+    } catch (err) {
+      return false;
+    }
+  },
+
+  /**
+   * 重複として捨てるリクエストが位置を持っていて、直前の記録（2分以内）に位置が無いとき、
+   * 履歴とシートの直前の記録に位置を入れる。店の座標がキャッシュにあれば直線距離も出す。
+   * 補完したら true。
+   */
+  backfillGeoToLast_: function (geo) {
+    try {
+      var history = this.readJson(this.HISTORY_FILE, []);
+      if (!history.length) return false;
+      var last = history[0];
+      if (last.lat != null) return false;
+      var t = this.parseStampSec_(last.reqAt || (last.ts + ':00'));
+      if (!t || Date.now() - t.getTime() > 120000) return false;
+
+      last.lat = geo.lat;
+      last.lng = geo.lng;
+      this.applyGeo_(last, this.geoCached_(last.store));
+      this.writeJson(this.HISTORY_FILE, history);
+      CacheService.getScriptCache().remove('data');
+
+      var sh = this.getSheet_(false);
+      if (sh && last.id && sh.getLastRow() >= 2) {
+        var f = sh.getRange(1, 1, sh.getLastRow(), 1).createTextFinder(last.id).matchEntireCell(true).findNext();
+        if (f) {
+          var r = f.getRow();
+          var cur = sh.getRange(r, 25, 1, 2).getValues()[0];
+          if (cur[0] === '' && cur[1] === '') {
+            sh.getRange(r, 25, 1, 5).setValues([[
+              last.lat, last.lng,
+              last.storeLat != null ? last.storeLat : '', last.storeLng != null ? last.storeLng : '',
+              last.pickupKm != null ? last.pickupKm : ''
+            ]]);
+          }
+        }
+      }
+      return true;
     } catch (err) {
       return false;
     }
