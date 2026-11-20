@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-10-22-03',
+  VERSION: '2026-10-23-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -147,6 +147,9 @@
   },
 
   doGet: function (e) {
+    if (e && e.parameter && e.parameter.pts) {
+      return this.jsonOut(this.pointsData_());
+    }
     if (e && e.parameter && e.parameter.geo) {
       return ContentService.createTextOutput(this.geoSummary_())
         .setMimeType(ContentService.MimeType.TEXT);
@@ -310,7 +313,8 @@
     if (cache[key]) return cache[key];
 
     var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
-    if (!apiKey) return null;
+    this._placeStatus = 'ok';
+    if (!apiKey) { this._placeStatus = 'nokey'; return null; }
 
     try {
       var resp = UrlFetchApp.fetch('https://places.googleapis.com/v1/places:searchText', {
@@ -324,13 +328,18 @@
           textQuery: store,
           languageCode: 'ja',
           regionCode: 'JP',
-          maxResultCount: 1
+          maxResultCount: 1,
+          // 同名の別の店に当たらないよう、立川周辺（半径20km）を優先する（絞り込みではなく優先）
+          locationBias: { circle: { center: { latitude: 35.70, longitude: 139.43 }, radius: 20000 } }
         }),
         muteHttpExceptions: true
       });
 
       var body = JSON.parse(resp.getContentText());
-      if (!body.places || !body.places.length) return null;
+      if (!body.places || !body.places.length) {
+        this._placeStatus = body.error ? 'error' : 'empty';
+        return null;
+      }
 
       var pl = body.places[0];
       var result = {
@@ -344,6 +353,7 @@
       this.writeJson(this.PLACES_FILE, cache);
       return result;
     } catch (err) {
+      this._placeStatus = 'error';
       return null;
     }
   },
@@ -915,6 +925,108 @@
       CacheService.getScriptCache().remove('data');
     }
     return out;
+  },
+
+  /**
+   * 地図・集計ページ用（?pts=1）。全件の「時刻・店・種別・金額・分・km・位置」を、軽い配列で返す。
+   * 自分の位置は約110mに丸める。店の位置は、シートに無ければ places.json（店の座標のキャッシュ）から補う。
+   * 列：[時刻, 店, 買い物代行(1/0), 報酬, 提示分, km, 追加配達(1/0), 店lat, 店lng, 自分lat, 自分lng, 実績分]
+   */
+  pointsData_: function () {
+    var sh = this.getSheet_(false);
+    if (!sh || sh.getLastRow() < 2) return { n: 0, rows: [], stores: 0, located: 0, notFound: 0 };
+
+    var n = sh.getLastRow() - 1;
+    var v = sh.getRange(2, 1, n, 29).getValues();
+    var places = this.readJson(this.PLACES_FILE, {});
+    var nf = places.__notfound || {};
+    var num = function (x) { return (x === '' || x == null || isNaN(Number(x))) ? null : Number(x); };
+    var round3 = function (x) { var y = num(x); return y == null ? null : Math.round(y * 1000) / 1000; };
+    var round5 = function (x) { return x == null ? null : Math.round(x * 1e5) / 1e5; };
+
+    var rows = [];
+    var storeSet = {};
+    var locSet = {};
+    for (var i = 0; i < n; i++) {
+      var r = v[i];
+      var t = r[1];
+      var ts = (t instanceof Date) ? Utilities.formatDate(t, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm') : String(t).slice(0, 16);
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(ts)) continue;
+
+      var store = String(r[2]);
+      var key = this.normKey(store);
+      var sLat = num(r[26]);
+      var sLng = num(r[27]);
+      if (sLat == null) {
+        var pl = places[key];
+        if (pl && pl.lat != null) { sLat = pl.lat; sLng = pl.lng; }
+      }
+      storeSet[key] = 1;
+      if (sLat != null) locSet[key] = 1;
+
+      rows.push([
+        ts, store, r[21] === '買い物代行' ? 1 : 0, num(r[4]), num(r[5]), num(r[6]),
+        String(r[8]) === '追加' ? 1 : 0,
+        round5(sLat), round5(sLng), round3(r[24]), round3(r[25]), num(r[17])
+      ]);
+    }
+
+    var stores = Object.keys(storeSet);
+    var notFound = 0;
+    stores.forEach(function (k) { if (!locSet[k] && nf[k]) notFound++; });
+    return { n: rows.length, rows: rows, stores: stores.length, located: Object.keys(locSet).length, notFound: notFound };
+  },
+
+  /**
+   * シートにある全部の店の座標を、まとめて調べて places.json に入れる（地図ページの「店の位置を取り込む」用）。
+   * 1回に limit 件まで。見つからなかった店は覚えておき、やり直さない。通信やキーの問題で失敗したときは、覚えずに止める。
+   */
+  api_geocodeStores: function (limit) {
+    limit = Math.max(1, Math.min(Number(limit) || 25, 60));
+    var sh = this.getSheet_(false);
+    if (!sh || sh.getLastRow() < 2) return { status: 'error', message: 'シートが未設定です' };
+
+    var names = sh.getRange(2, 3, sh.getLastRow() - 1, 1).getValues();
+    var places = this.readJson(this.PLACES_FILE, {});
+    var nf = places.__notfound || {};
+
+    var todo = [];
+    var seen = {};
+    for (var i = 0; i < names.length; i++) {
+      var s = String(names[i][0]);
+      var k = this.normKey(s);
+      if (!s || seen[k]) continue;
+      seen[k] = 1;
+      if (places[k] || nf[k]) continue;
+      todo.push(s);
+    }
+
+    var resolved = 0;
+    var missed = [];
+    var stopped = '';
+    for (var j = 0; j < todo.length && j < limit; j++) {
+      var pl = this.resolvePlace(todo[j]);
+      if (pl && pl.lat != null) { resolved++; continue; }
+      if (this._placeStatus === 'empty') { missed.push(this.normKey(todo[j])); continue; }
+      stopped = this._placeStatus === 'nokey' ? 'Maps APIキーが設定されていません' : 'Places APIの呼び出しに失敗しました';
+      break;
+    }
+
+    if (missed.length) {
+      var fresh = this.readJson(this.PLACES_FILE, {}); // resolvePlace が書いた最新を読み直してから足す
+      fresh.__notfound = fresh.__notfound || {};
+      missed.forEach(function (k) { fresh.__notfound[k] = 1; });
+      this.writeJson(this.PLACES_FILE, fresh);
+    }
+
+    if (stopped) return { status: 'error', message: stopped, resolved: resolved, notFound: missed.length };
+    return {
+      status: 'ok',
+      resolved: resolved,
+      notFound: missed.length,
+      remaining: Math.max(todo.length - limit, 0),
+      total: Object.keys(seen).length
+    };
   },
 
   /** シートの該当行の「店lat・店lng・店まで直線」（AA〜AC列）を書き換える */
