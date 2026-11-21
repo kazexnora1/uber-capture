@@ -90,6 +90,7 @@
   .hbar i { display: block; height: 12px; background: var(--link); border-radius: 3px; min-width: 1px; }
   select.pick { width: 100%; font-size: 15px; padding: 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); margin-top: 8px; }
   .big { font-size: 22px; font-weight: 700; color: var(--ink); }
+  .cmark { background: var(--warn); color: #fff; border: 2px solid #fff; border-radius: 7px; width: 26px; height: 26px; text-align: center; line-height: 22px; font-weight: 700; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
   .verbar { text-align: center; color: var(--muted); font-size: 11px; padding-top: 4px; }
 </style>
 </head>
@@ -114,6 +115,14 @@
       <div class="note" id="mapNote"></div>
       <div class="row" style="margin-top:8px"><button id="fitBtn" type="button">全体を表示</button></div>
     </div>
+  </div>
+
+  <div class="card" id="coverCard">
+    <div class="sec">
+      <div class="head"><b style="font-size:16px">店の重なりが多い場所</b><span class="sub" id="coverSub"></span></div>
+      <div class="note">円の半径の中に入る店の数と、過去に鳴った件数の合計で数えています。地図をタップすると、その地点の数値が出ます。</div>
+    </div>
+    <div class="wlist" id="coverList"></div>
   </div>
 
   <div class="card" id="waitCard">
@@ -191,7 +200,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-06';
+var MAP_VERSION = '2026-11-21-07';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -394,7 +403,7 @@ function renderMap() {
         + '平均提示 ' + (c.min != null ? Math.round(c.min) + '分' : '—')
         + (F.mode === 'store' && top ? '<hr style="border:0;border-top:1px solid #ddd">' + top : '');
       L.circleMarker([c.lat, c.lng], {
-        radius: 5 + Math.sqrt(c.n) * 4.5, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.62
+        radius: 5 + Math.sqrt(c.n) * 4.5, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.62, bubblingMouseEvents: false
       }).bindPopup(html).addTo(layer);
       pts.push([c.lat, c.lng]);
     });
@@ -511,7 +520,7 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
-  seg($('radSeg'), [[0, 'なし'], [0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); });
+  seg($('radSeg'), [[0, 'なし'], [0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); renderCover(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
     ? 'リクエストが出た店の場所（過去分も含む）。'
@@ -567,7 +576,7 @@ function renderImport() {
 /* ---------- 待機の候補 ---------- */
 
 var W = { when: 'now', grid: 600, radius: 0, pos: null };
-var clayer = null, wlayer = null, wRank = [], wMarkers = [];
+var clayer = null, cvlayer = null, tlayer = null, wlayer = null, wRank = [], wMarkers = [];
 
 function hav(lat1, lng1, lat2, lng2) {
   var r = Math.PI / 180;
@@ -714,6 +723,109 @@ function useLocation() {
     btn.textContent = '現在地を使う';
     $('waitNote').textContent = '現在地を取得できませんでした。Safariの設定で、このページの位置情報を許可してください。';
   }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+}
+
+/* ---------- 店の重なり（半径内の店数・鳴った件数） ---------- */
+
+var CVS = [];
+function coverR() { return F.rad > 0 ? F.rad : 1; }
+function kmLabel(r) { return r < 1 ? r * 1000 + 'm' : r + 'km'; }
+
+function storeAgg(rows) {
+  var m = {};
+  rows.forEach(function (p) {
+    if (p.sLat == null) return;
+    var o = m[p.store] || (m[p.store] = { name: p.store, lat: 0, lng: 0, k: 0, n: 0, rs: 0, rn: 0 });
+    o.lat += p.sLat; o.lng += p.sLng; o.k++; o.n++;
+    if (p.rate != null) { o.rs += p.rate; o.rn++; }
+  });
+  return Object.keys(m).map(function (k) { var o = m[k]; o.lat /= o.k; o.lng /= o.k; return o; });
+}
+
+// 地点から半径R(km)以内の店を数える（full=trueで主な店も返す）
+function coverStats(lat, lng, R, full) {
+  var cx = Math.cos(lat * Math.PI / 180) * 111.32, st = 0, n = 0, rs = 0, rn = 0, top = [];
+  for (var i = 0; i < CVS.length; i++) {
+    var o = CVS[i], dx = (o.lng - lng) * cx, dy = (o.lat - lat) * 110.57;
+    if (dx * dx + dy * dy <= R * R) {
+      st++; n += o.n; rs += o.rs; rn += o.rn;
+      if (full) top.push(o);
+    }
+  }
+  top.sort(function (a, b) { return b.n - a.n; });
+  return { stores: st, n: n, rate: rn ? rs / rn : null, top: top.slice(0, 3) };
+}
+
+function coverHtml(title, c) {
+  if (!c.stores) return '<b>' + title + '</b><br>鳴ったことのある店はありません';
+  return '<b>' + title + '</b><br>店 ' + c.stores + '店 ／ 鳴った ' + c.n + '件'
+    + (c.rate != null ? '<br>平均時給（提示） ' + yen(c.rate) : '')
+    + '<br>主な店：' + c.top.map(function (o) { return esc(o.name) + '（' + o.n + '）'; }).join('、');
+}
+
+var CVPICK = [];
+
+function renderCover() {
+  var R = coverR();
+  CVS = storeAgg(filtered());
+  if (cvlayer) cvlayer.clearLayers();
+  if (tlayer) tlayer.clearLayers();
+  $('coverSub').textContent = '半径' + kmLabel(R) + (F.rad > 0 ? '' : '（円「なし」のときは1km）');
+  CVPICK = [];
+  if (!CVS.length) { $('coverList').innerHTML = '<div class="empty">店の位置のある記録がありません。</div>'; return; }
+
+  var minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  CVS.forEach(function (o) {
+    minLat = Math.min(minLat, o.lat); maxLat = Math.max(maxLat, o.lat);
+    minLng = Math.min(minLng, o.lng); maxLng = Math.max(maxLng, o.lng);
+  });
+  var step = Math.max(0.15, R / 4);
+  var dLat = step / 110.57, dLng = step / (111.32 * Math.cos(35.7 * Math.PI / 180));
+  var cands = [];
+  for (var la = minLat; la <= maxLat + dLat; la += dLat) {
+    for (var lo = minLng; lo <= maxLng + dLng; lo += dLng) {
+      var c = coverStats(la, lo, R, false);
+      if (c.n > 0) cands.push({ lat: la, lng: lo, n: c.n, st: c.stores });
+    }
+  }
+  cands.sort(function (a, b) { return b.n - a.n || b.st - a.st; });
+  cands.forEach(function (d) {   // 半径の1.5倍より近い候補は同じ場所とみなして飛ばす
+    if (CVPICK.length >= 5) return;
+    var ok = CVPICK.every(function (q) {
+      var dx = (d.lng - q.lng) * Math.cos(d.lat * Math.PI / 180) * 111.32, dy = (d.lat - q.lat) * 110.57;
+      return Math.sqrt(dx * dx + dy * dy) >= R * 1.5;
+    });
+    if (ok) CVPICK.push({ lat: d.lat, lng: d.lng });
+  });
+
+  var html = '';
+  CVPICK.forEach(function (q, i) {
+    q.c = coverStats(q.lat, q.lng, R, true);
+    var L_ = String.fromCharCode(65 + i);
+    html += '<div class="item"><div class="wnum" style="background:var(--warn);border-radius:7px">' + L_ + '</div><div class="wbody">'
+      + '<b>' + q.c.n + '件・' + q.c.stores + '店</b><br>'
+      + (q.c.rate != null ? '平均時給（提示） ' + yen(q.c.rate) + '<br>' : '')
+      + '主な店：' + q.c.top.map(function (o) { return esc(o.name) + '（' + o.n + '）'; }).join('、')
+      + '<div class="acts"><button type="button" data-i="' + i + '">地図で見る</button></div></div></div>';
+    if (cvlayer && window.L) {
+      L.marker([q.lat, q.lng], { icon: L.divIcon({ className: '', html: '<div class="cmark">' + L_ + '</div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 900 })
+        .bindPopup(coverHtml('候補' + L_ + '：半径' + kmLabel(R), q.c)).addTo(cvlayer);
+    }
+  });
+  $('coverList').innerHTML = html;
+  Array.prototype.forEach.call($('coverList').querySelectorAll('button[data-i]'), function (b) {
+    b.onclick = function () { focusCover(+b.getAttribute('data-i')); };
+  });
+}
+
+function focusCover(i) {
+  var q = CVPICK[i];
+  if (!q || !map) return;
+  var R = coverR();
+  tlayer.clearLayers();
+  L.circle([q.lat, q.lng], { radius: R * 1000, color: '#d9822b', weight: 2, fillColor: '#d9822b', fillOpacity: 0.05, interactive: false }).addTo(tlayer);
+  map.fitBounds(L.latLng(q.lat, q.lng).toBounds(R * 2600));
+  $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 /* ---------- 店名のゆれをまとめる ---------- */
@@ -893,6 +1005,7 @@ function renderAll() {
   renderMap();
   renderTable();
   renderWait();
+  renderCover();
   renderDist();
   renderNext();
   renderImport();
@@ -950,6 +1063,14 @@ if (window.L) {
   clayer = L.layerGroup().addTo(map);
   layer = L.layerGroup().addTo(map);
   wlayer = L.layerGroup().addTo(map);
+  cvlayer = L.layerGroup().addTo(map);
+  tlayer = L.layerGroup().addTo(map);
+  map.on('click', function (e) {
+    var R = coverR(), c = coverStats(e.latlng.lat, e.latlng.lng, R, true);
+    tlayer.clearLayers();
+    L.circle(e.latlng, { radius: R * 1000, color: '#d9822b', weight: 2, fillColor: '#d9822b', fillOpacity: 0.05, interactive: false }).addTo(tlayer);
+    L.popup().setLatLng(e.latlng).setContent(coverHtml('この地点から半径' + kmLabel(R), c)).openOn(map);
+  });
 } else {
   $('map').innerHTML = '<div class="empty">地図の部品を読み込めませんでした。電波状況を確認して、開き直してください。</div>';
 }
