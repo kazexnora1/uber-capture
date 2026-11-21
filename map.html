@@ -77,6 +77,19 @@
   table.grid th.rowh { width: 26px; text-align: center; color: var(--ink); font-size: 13px; }
 
   .leaflet-popup-content { font-size: 13px; line-height: 1.5; margin: 10px 12px; }
+
+  .wlist .item { display: flex; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); align-items: flex-start; }
+  .wnum { flex: 0 0 26px; height: 26px; border-radius: 13px; background: var(--link); color: #fff; text-align: center; line-height: 26px; font-size: 13px; font-weight: 700; }
+  .wbody { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.55; color: var(--muted); }
+  .wbody b { font-size: 15px; color: var(--ink); }
+  .wbody .acts { display: flex; gap: 6px; margin-top: 6px; }
+  .wbody .acts a, .wbody .acts button { font-size: 13px; padding: 6px 10px; min-height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--link); text-decoration: none; }
+  .wmark { background: var(--link); color: #fff; border: 2px solid #fff; border-radius: 50%; width: 26px; height: 26px; text-align: center; line-height: 22px; font-weight: 700; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+  .bar { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 3px 0; color: var(--muted); }
+  .bar b { flex: 0 0 64px; font-weight: 400; text-align: right; }
+  .bar i { display: block; height: 12px; background: var(--link); border-radius: 3px; min-width: 1px; }
+  select.pick { width: 100%; font-size: 15px; padding: 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); margin-top: 8px; }
+  .big { font-size: 22px; font-weight: 700; color: var(--ink); }
   .verbar { text-align: center; color: var(--muted); font-size: 11px; padding-top: 4px; }
 </style>
 </head>
@@ -97,6 +110,38 @@
       <div class="legend"><span id="legLo"></span><div class="bar" id="legBar"></div><span id="legHi"></span></div>
       <div class="note" id="mapNote"></div>
       <div class="row" style="margin-top:8px"><button id="fitBtn" type="button">全体を表示</button></div>
+    </div>
+  </div>
+
+  <div class="card" id="waitCard">
+    <div class="sec">
+      <div class="head"><b>次の待機の候補</b><span class="sub" id="waitNow"></span></div>
+      <div class="seg" id="waitWhenSeg" style="margin-top:8px"></div>
+      <div class="label" style="margin-top:10px">まとめ方</div>
+      <div class="seg" id="waitGridSeg"></div>
+      <div class="label" style="margin-top:10px">現在地からの範囲</div>
+      <div class="seg" id="waitRadSeg"></div>
+      <div class="row" style="margin-top:8px"><button id="locBtn" type="button">現在地を使う</button></div>
+      <div class="note" id="waitNote"></div>
+    </div>
+    <div class="wlist" id="waitList"></div>
+  </div>
+
+  <div class="card" id="distCard">
+    <div class="sec">
+      <div class="head"><b style="font-size:16px">店ごとの「鳴った距離」</b><span class="sub">自分の位置 → 店</span></div>
+      <select class="pick" id="distSel"></select>
+      <div id="distOut" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="card" id="nextCard">
+    <div class="sec">
+      <div class="head"><b style="font-size:16px">次のリクエストまでの目安</b><span class="sub">配達完了から</span></div>
+      <select class="pick" id="nextSel"></select>
+      <div class="seg" id="nextWhenSeg" style="margin-top:8px"></div>
+      <div id="nextOut" style="margin-top:10px"></div>
+      <div class="note">配達先の町（住所から判定）と完了の時間帯が近い過去の記録で、完了から次の受信までの時間を数えています。完了時刻が未記録のものは「受信＋提示分」で推定しています。90分を超える空きは休憩とみなして除外しています。</div>
     </div>
   </div>
 
@@ -140,7 +185,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-10-23-01';
+var MAP_VERSION = '2026-11-21-02';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -192,7 +237,7 @@ function decode(r) {
     add: r[6] === 1,
     sLat: r[7], sLng: r[8],
     rLat: r[9], rLng: r[10],
-    act: r[11],
+    act: r[11], addr: r[12] || '', done: r[13] || null,
     rate: (r[3] != null && r[4]) ? r[3] / r[4] * 60 : null
   };
 }
@@ -204,6 +249,7 @@ function loadData() {
     .then(function (d) {
       ALL = (d.rows || []).map(decode);
       META = { stores: d.stores || 0, located: d.located || 0, notFound: d.notFound || 0 };
+      computeGaps();
       MAXDAY = ALL.reduce(function (a, p) { return Math.max(a, p.day); }, 0);
       fitNext = true;
       renderAll();
@@ -462,10 +508,282 @@ function renderImport() {
   }
 }
 
+
+/* ---------- 待機の候補 ---------- */
+
+var W = { when: 'now', grid: 600, radius: 0, pos: null };
+var wlayer = null, wRank = [], wMarkers = [];
+
+function hav(lat1, lng1, lat2, lng2) {
+  var r = Math.PI / 180;
+  var a = Math.pow(Math.sin((lat2 - lat1) * r / 2), 2)
+    + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.pow(Math.sin((lng2 - lng1) * r / 2), 2);
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function tokyoAt(offsetH) {
+  var t = new Date(Date.now() + 9 * 3600000 + offsetH * 3600000);
+  return { dow: (t.getUTCDay() + 6) % 7, hour: t.getUTCHours() + t.getUTCMinutes() / 60 };
+}
+
+function waitTarget() {
+  return W.when === 'now' ? tokyoAt(0) : W.when === 'next' ? tokyoAt(3) : null;
+}
+
+// 記録がその時間帯・曜日にどれだけ近いか（0〜1）
+function slotWeight(p, tg) {
+  if (!tg) return 1;
+  var dh = Math.abs(p.hour + 0.5 - tg.hour);
+  dh = Math.min(dh, 24 - dh);
+  if (dh > 1.5) return 0;
+  var dw = p.dow === tg.dow ? 1 : ((p.dow >= 5) === (tg.dow >= 5) ? 0.4 : 0);
+  return dw * (dh <= 0.5 ? 1 : 0.7);
+}
+
+function waitRank() {
+  var rows = ALL.filter(passBase);
+  var meCount = rows.filter(function (p) { return p.rLat != null; }).length;
+  var basis = meCount >= 40 ? 'me' : 'store';
+  var tg = waitTarget();
+  var rs = rows.filter(function (p) { return p.rate != null; });
+  var gRate = rs.length ? rs.reduce(function (a, p) { return a + p.rate; }, 0) / rs.length : 0;
+  var dLat = W.grid / 111000;
+  var dLng = W.grid / (111000 * Math.cos(35.7 * Math.PI / 180));
+  var m = {};
+  rows.forEach(function (p) {
+    var lat = basis === 'me' ? p.rLat : p.sLat;
+    var lng = basis === 'me' ? p.rLng : p.sLng;
+    if (lat == null || lng == null) return;
+    var w = slotWeight(p, tg);
+    if (w <= 0) return;
+    var k = Math.floor(lat / dLat) + ',' + Math.floor(lng / dLng);
+    var c = m[k] || (m[k] = { w: 0, n: 0, wr: 0, wrw: 0, sLat: 0, sLng: 0, stores: {} });
+    c.w += w; c.n++; c.sLat += lat; c.sLng += lng;
+    if (p.rate != null) { c.wr += w * p.rate; c.wrw += w; }
+    c.stores[p.store] = (c.stores[p.store] || 0) + 1;
+  });
+  var useRad = W.pos && W.radius > 0;
+  var list = Object.keys(m).map(function (k) {
+    var c = m[k];
+    var lat = c.sLat / c.n, lng = c.sLng / c.n;
+    var rate = (c.wr + 3 * gRate) / (c.wrw + 3);   // 件数が少ない所は全体平均に寄せる
+    return {
+      n: c.n, w: c.w, rate: rate, score: c.w * rate, lat: lat, lng: lng, stores: c.stores,
+      dist: W.pos ? hav(W.pos.lat, W.pos.lng, lat, lng) : null
+    };
+  }).filter(function (c) {
+    return c.w >= 1 && (!useRad || c.dist <= W.radius);
+  });
+  list.sort(function (a, b) { return b.score - a.score; });
+  return { list: list.slice(0, 5), basis: basis, meCount: meCount, base: rows.length };
+}
+
+function renderWait() {
+  seg($('waitWhenSeg'), [['now', '今の時間'], ['next', '3時間後'], ['all', '時間を問わず']], W.when, function (v) { W.when = v; renderWait(); });
+  seg($('waitGridSeg'), [[300, '300m'], [600, '600m'], [1000, '1km']], W.grid, function (v) { W.grid = +v; renderWait(); });
+  seg($('waitRadSeg'), [[0, '指定なし'], [3, '3km'], [1.5, '1.5km'], [0.8, '800m']], W.radius, function (v) { W.radius = +v; renderWait(); });
+
+  var tg = waitTarget() || tokyoAt(0);
+  var now = tokyoAt(0);
+  $('waitNow').textContent = '今 ' + DOW[now.dow] + '曜 ' + Math.floor(now.hour) + '時台';
+
+  var r = waitRank();
+  wRank = r.list;
+  var html = '';
+  var note = r.basis === 'me'
+    ? '鳴ったときの自分の位置（' + r.meCount + '件）から集計しています。'
+    : '自分の位置の記録がまだ少ない（' + r.meCount + '件）ため、店の位置で集計しています。店の位置は「注文が出る場所」で、待機する場所そのものではありません。';
+  note += ' 順位は「その時間帯に鳴った多さ × 提示の時給」です。件数は、あなたが稼働していた場所・時間に偏ります。';
+  if (W.radius > 0 && !W.pos) note += ' 範囲を使うには「現在地を使う」を押してください。';
+  $('waitNote').textContent = note;
+
+  if (!r.list.length) {
+    html = '<div class="empty">この条件で候補にできる記録が足りません。「時間を問わず」にするか、範囲を広げてみてください。</div>';
+  } else {
+    r.list.forEach(function (c, i) {
+      var names = Object.keys(c.stores).sort(function (a, b) { return c.stores[b] - c.stores[a]; });
+      var top = names.slice(0, 2).map(function (s) { return esc(s) + '（' + c.stores[s] + '）'; }).join('、');
+      html += '<div class="item"><div class="wnum">' + (i + 1) + '</div><div class="wbody">'
+        + '<b>' + (top || '（店名なし）') + (names.length > 2 ? ' ほか' : '') + '</b><br>'
+        + '該当 ' + c.n + '件 ／ 平均時給（提示） ' + yen(c.rate)
+        + (c.dist != null ? ' ／ 現在地から ' + c.dist.toFixed(1) + 'km' : '')
+        + '<div class="acts"><button type="button" data-i="' + i + '">地図で見る</button>'
+        + '<a href="https://maps.apple.com/?daddr=' + c.lat.toFixed(5) + ',' + c.lng.toFixed(5) + '&dirflg=d">経路</a></div>'
+        + '</div></div>';
+    });
+  }
+  $('waitList').innerHTML = html;
+  Array.prototype.forEach.call($('waitList').querySelectorAll('button[data-i]'), function (b) {
+    b.onclick = function () { focusWait(+b.getAttribute('data-i')); };
+  });
+  drawWait();
+}
+
+function drawWait() {
+  if (!map || !window.L || !wlayer) return;
+  wlayer.clearLayers();
+  wMarkers = [];
+  wRank.forEach(function (c, i) {
+    var mk = L.marker([c.lat, c.lng], {
+      icon: L.divIcon({ className: '', html: '<div class="wmark">' + (i + 1) + '</div>', iconSize: [26, 26], iconAnchor: [13, 13] }),
+      zIndexOffset: 1000
+    }).bindPopup('<b>候補 ' + (i + 1) + '</b><br>平均時給（提示） ' + yen(c.rate) + '<br>該当 ' + c.n + '件').addTo(wlayer);
+    wMarkers.push(mk);
+  });
+  if (W.pos) {
+    L.circleMarker([W.pos.lat, W.pos.lng], { radius: 7, color: '#fff', weight: 2, fillColor: '#1f5fa8', fillOpacity: 1 })
+      .bindPopup('現在地').addTo(wlayer);
+  }
+}
+
+function focusWait(i) {
+  var c = wRank[i];
+  if (!c || !map) return;
+  map.setView([c.lat, c.lng], 15);
+  if (wMarkers[i]) wMarkers[i].openPopup();
+  $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function useLocation() {
+  var btn = $('locBtn');
+  if (!navigator.geolocation) { $('waitNote').textContent = 'この端末では現在地を取得できません。'; return; }
+  btn.disabled = true;
+  btn.textContent = '取得中…';
+  navigator.geolocation.getCurrentPosition(function (pos) {
+    W.pos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    btn.disabled = false;
+    btn.textContent = '現在地を更新';
+    renderWait();
+  }, function () {
+    btn.disabled = false;
+    btn.textContent = '現在地を使う';
+    $('waitNote').textContent = '現在地を取得できませんでした。Safariの設定で、このページの位置情報を許可してください。';
+  }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+}
+
+/* ---------- 店ごとの鳴った距離 ---------- */
+
+var D = { store: '*' };
+
+function renderDist() {
+  var rows = ALL.filter(function (p) { return passBase(p) && p.rLat != null && p.sLat != null; });
+  var cnt = {};
+  rows.forEach(function (p) { cnt[p.store] = (cnt[p.store] || 0) + 1; });
+  var names = Object.keys(cnt).filter(function (k) { return cnt[k] >= 3; })
+    .sort(function (a, b) { return cnt[b] - cnt[a]; });
+  var sel = $('distSel');
+  var h = '<option value="*">全部の店（' + rows.length + '件）</option>';
+  names.forEach(function (k) { h += '<option value="' + esc(k) + '">' + esc(k) + '（' + cnt[k] + '件）</option>'; });
+  sel.innerHTML = h;
+  if (D.store !== '*' && !cnt[D.store]) D.store = '*';
+  sel.value = D.store;
+  sel.onchange = function () { D.store = sel.value; renderDist(); };
+
+  var d = rows.filter(function (p) { return D.store === '*' || p.store === D.store; })
+    .map(function (p) { return hav(p.rLat, p.rLng, p.sLat, p.sLng); });
+  if (d.length < 3) { $('distOut').innerHTML = '<div class="empty">位置のある記録がまだ足りません。</div>'; return; }
+  var step = 0.5, nb = Math.min(12, Math.ceil(pct(d, 0.95) / step) + 1), bins = [];
+  for (var i = 0; i < nb; i++) bins.push(0);
+  d.forEach(function (x) { bins[Math.min(nb - 1, Math.floor(x / step))]++; });
+  var mx = Math.max.apply(null, bins), out = '';
+  bins.forEach(function (c, i) {
+    var lab = (i * step).toFixed(1) + (i === nb - 1 ? 'km〜' : '〜' + ((i + 1) * step).toFixed(1));
+    out += '<div class="bar"><b>' + lab + '</b><i style="width:' + Math.round(c / mx * 62) + '%"></i>' + c + '</div>';
+  });
+  out += '<div class="note">' + d.length + '件 ／ 中央値 ' + pct(d, 0.5).toFixed(2) + 'km ／ 25〜75% '
+    + pct(d, 0.25).toFixed(2) + '〜' + pct(d, 0.75).toFixed(2) + 'km ／ 最大 ' + pct(d, 1).toFixed(2) + 'km</div>';
+  $('distOut').innerHTML = out;
+}
+
+/* ---------- 配達完了から次のリクエストまで ---------- */
+
+var N = { area: '', when: 'now' };
+var SAMPLES = [];
+
+function tsMin(ts) {
+  return Date.UTC(+ts.slice(0, 4), +ts.slice(5, 7) - 1, +ts.slice(8, 10), +ts.slice(11, 13), +ts.slice(14, 16)) / 60000;
+}
+
+// 住所から「市+町」を取り出す（例：立川市錦町）
+function areaOf(a) {
+  a = String(a || '').replace(/\s/g, '');
+  var m = a.match(/^(?:東京都)?(.*?[市区町村])(.*)$/);
+  if (!m) return null;
+  return { city: m[1], key: m[1] + m[2].replace(/[0-9０-９一二三四五六七八九十].*$/, '') };
+}
+
+function computeGaps() {
+  ALL.sort(function (a, b) { return a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0; });
+  SAMPLES = [];
+  for (var i = 0; i < ALL.length - 1; i++) {
+    var p = ALL[i], q = ALL[i + 1], ar = areaOf(p.addr);
+    if (!ar) continue;
+    // 完了時刻が記録されていれば それ、なければ「受信時刻＋提示分」で推定
+    var dm = p.done ? tsMin(p.done) : (p.min ? tsMin(p.ts) + p.min : null);
+    if (dm == null) continue;
+    var gap = tsMin(q.ts) - dm;
+    if (gap > 90) continue;               // 長い空きは休憩（オフライン）とみなして除く
+    if (gap < 0) gap = 0;                 // 配達中に次が来た（追加・ダブル）
+    var dt = new Date(dm * 60000);        // 日本時間の壁時計をUTCとして持っている
+    SAMPLES.push({ p: p, city: ar.city, key: ar.key, gap: gap, est: !p.done,
+      dow: (dt.getUTCDay() + 6) % 7, hour: dt.getUTCHours() });
+  }
+}
+
+function nextStats(key, city, tg) {
+  var tries = [['町', function (s) { return s.key === key; }], ['市', function (s) { return s.city === city; }], ['全体', function () { return true; }]];
+  for (var t = 0; t < tries.length; t++) {
+    var arr = [], sw = 0;
+    SAMPLES.forEach(function (s) {
+      if (!passBase(s.p) || !tries[t][1](s)) return;
+      var w = slotWeight(s, tg);
+      if (w > 0) { arr.push([s.gap, w]); sw += w; }
+    });
+    if (sw >= 6 || t === tries.length - 1) return { level: tries[t][0], arr: arr, sw: sw };
+  }
+}
+
+function renderNext() {
+  var cnt = {};
+  SAMPLES.forEach(function (s) { if (passBase(s.p)) cnt[s.key] = (cnt[s.key] || 0) + 1; });
+  var keys = Object.keys(cnt).filter(function (k) { return cnt[k] >= 6; }).sort(function (a, b) { return cnt[b] - cnt[a]; });
+  var sel = $('nextSel');
+  var h = '';
+  keys.forEach(function (k) { h += '<option value="' + esc(k) + '">' + esc(k) + '（' + cnt[k] + '件）</option>'; });
+  sel.innerHTML = h;
+  if (!N.area || !cnt[N.area]) N.area = keys[0] || '';
+  sel.value = N.area;
+  sel.onchange = function () { N.area = sel.value; renderNext(); };
+  seg($('nextWhenSeg'), [['now', '今の時間帯'], ['all', '時間を問わず']], N.when, function (v) { N.when = v; renderNext(); });
+  if (!N.area) { $('nextOut').innerHTML = '<div class="empty">記録がまだ足りません。</div>'; return; }
+
+  var ar = areaOf(N.area), tg = N.when === 'now' ? tokyoAt(0) : null;
+  var st = nextStats(N.area, ar ? ar.city : '', tg);
+  if (!st.sw) { $('nextOut').innerHTML = '<div class="empty">この条件の記録がありません。</div>'; return; }
+  var gaps = st.arr.slice().sort(function (a, b) { return a[0] - b[0]; });
+  var within = function (x) {
+    var w = 0; st.arr.forEach(function (g) { if (g[0] <= x) w += g[1]; });
+    return Math.round(w / st.sw * 100);
+  };
+  var half = 0, med = 0;
+  for (var i = 0; i < gaps.length; i++) { half += gaps[i][1]; if (half >= st.sw / 2) { med = gaps[i][0]; break; } }
+  var out = '<div>中央値 <span class="big">' + Math.round(med) + '分</span></div>';
+  [5, 10, 15, 30].forEach(function (x) {
+    var v = within(x);
+    out += '<div class="bar"><b>' + x + '分以内</b><i style="width:' + Math.round(v * 0.6) + '%"></i>' + v + '%</div>';
+  });
+  out += '<div class="note">根拠：' + (st.level === '町' ? '同じ町' : st.level === '市' ? '同じ市（町の記録が少ないため）' : '全体（記録が少ないため）')
+    + ' ' + gaps.length + '件（時間帯が近いほど重く数えています）</div>';
+  $('nextOut').innerHTML = out;
+}
+
 function renderAll() {
   renderControls();
   renderMap();
   renderTable();
+  renderWait();
+  renderDist();
+  renderNext();
   renderImport();
   $('status').textContent = ALL.length + '件';
 }
@@ -509,6 +827,7 @@ $('resetBtn').onclick = function () {
   renderAll();
 };
 $('importBtn').onclick = importStores;
+$('locBtn').onclick = useLocation;
 
 if (window.L) {
   map = L.map('map', { zoomControl: true }).setView(HOME, 12);
@@ -516,6 +835,7 @@ if (window.L) {
     maxZoom: 19, attribution: '© OpenStreetMap contributors'
   }).addTo(map);
   layer = L.layerGroup().addTo(map);
+  wlayer = L.layerGroup().addTo(map);
 } else {
   $('map').innerHTML = '<div class="empty">地図の部品を読み込めませんでした。電波状況を確認して、開き直してください。</div>';
 }
@@ -525,4 +845,3 @@ loadData();
 </script>
 </body>
 </html>
-
