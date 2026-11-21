@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-21-04',
+  VERSION: '2026-11-21-05',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -1120,7 +1120,7 @@
     for (var j = 0; j < todo.length && j < limit; j++) {
       var pl = this.resolvePlace(todo[j]);
       if (pl && pl.lat != null) { resolved++; continue; }
-      if (this._placeStatus === 'empty') { missed.push(this.normKey(todo[j])); continue; }
+      if (this._placeStatus === 'empty' || this._placeStatus === 'far') { missed.push(this.normKey(todo[j])); continue; } // 見つからない／遠すぎる店は、不明として次回から飛ばす
       stopped = this._placeStatus === 'nokey' ? 'Maps APIキーが設定されていません' : 'Places APIの呼び出しに失敗しました';
       break;
     }
