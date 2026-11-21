@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-21-03',
+  VERSION: '2026-11-21-04',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -199,6 +199,10 @@
     if (e && e.parameter && e.parameter.pts) {
       return this.jsonOut(this.pointsData_());
     }
+    if (e && e.parameter && e.parameter.cleanfar) {
+      return ContentService.createTextOutput(this.cleanFarGeo_())
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
     if (e && e.parameter && e.parameter.geo) {
       return ContentService.createTextOutput(this.geoSummary_())
         .setMimeType(ContentService.MimeType.TEXT);
@@ -359,7 +363,7 @@
   resolvePlace: function (store) {
     var key = this.normKey(store);
     var cache = this.readJson(this.PLACES_FILE, {});
-    if (cache[key]) return cache[key];
+    if (cache[key]) return this.isFarPlace_(cache[key].lat, cache[key].lng) ? null : cache[key];
 
     var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
     this._placeStatus = 'ok';
@@ -398,6 +402,7 @@
         lng: pl.location ? pl.location.longitude : null
       };
 
+      if (this.isFarPlace_(result.lat, result.lng)) { this._placeStatus = 'far'; return null; }
       cache[key] = result;
       this.writeJson(this.PLACES_FILE, cache);
       return result;
@@ -893,6 +898,57 @@
   },
 
   /** 2点間の直線距離（km）。ハーバーサイン */
+  /**
+   * 店の座標が立川から100km以上離れていたら「別の同名の店に当たった誤り」とみなす（例：沖縄）。
+   */
+  isFarPlace_: function (lat, lng) {
+    if (lat == null || lng == null || lat === '' || lng === '') return false;
+    lat = Number(lat); lng = Number(lng);
+    if (isNaN(lat) || isNaN(lng)) return false;
+    return this.haversineKm_(35.698, 139.414, lat, lng) > 100;
+  },
+
+  /**
+   * 遠すぎる店の座標を、シート・履歴・店キャッシュからまとめて消す（?cleanfar=1 で実行）。
+   * シートは店lat/店lng を空にして「店まで直線」を「不明」にする。
+   */
+  cleanFarGeo_: function () {
+    var out = { sheet: 0, history: 0, places: 0 };
+    var sh = this.getSheet_(false);
+    if (sh && sh.getLastRow() >= 2) {
+      var n = sh.getLastRow() - 1;
+      var rng = sh.getRange(2, 27, n, 3); // 店lat, 店lng, 店まで直線(km)
+      var v = rng.getValues(), t = false;
+      for (var i = 0; i < n; i++) {
+        if (v[i][0] !== '' && v[i][1] !== '' && this.isFarPlace_(v[i][0], v[i][1])) {
+          v[i] = ['', '', '不明'];
+          out.sheet++; t = true;
+        }
+      }
+      if (t) rng.setValues(v);
+    }
+    var history = this.readJson(this.HISTORY_FILE, []);
+    var hT = false;
+    for (var j = 0; j < history.length; j++) {
+      var h = history[j];
+      if (h.storeLat != null && this.isFarPlace_(h.storeLat, h.storeLng)) {
+        delete h.storeLat; delete h.storeLng; delete h.pickupKm;
+        out.history++; hT = true;
+      }
+    }
+    if (hT) { this.writeJson(this.HISTORY_FILE, history); CacheService.getScriptCache().remove('data'); }
+    var places = this.readJson(this.PLACES_FILE, {});
+    var pT = false;
+    Object.keys(places).forEach(function (k) {
+      var pl = places[k];
+      if (k !== '__notfound' && pl && pl.lat != null && this.isFarPlace_(pl.lat, pl.lng)) {
+        delete places[k]; out.places++; pT = true;
+      }
+    }, this);
+    if (pT) this.writeJson(this.PLACES_FILE, places);
+    return '遠すぎる店の座標を消しました：シート ' + out.sheet + '行 ／ 履歴 ' + out.history + '件 ／ 店キャッシュ ' + out.places + '件';
+  },
+
   haversineKm_: function (lat1, lng1, lat2, lng2) {
     var rad = Math.PI / 180;
     var dLat = (lat2 - lat1) * rad;
@@ -912,6 +968,7 @@
   applyGeo_: function (entry, place) {
     if (!place || place.lat == null || place.lng == null) return;
     if (entry.lat == null || entry.lng == null) return;
+    if (this.isFarPlace_(place.lat, place.lng)) return;
     entry.storeLat = place.lat;
     entry.storeLng = place.lng;
     entry.pickupKm = Math.round(this.haversineKm_(entry.lat, entry.lng, place.lat, place.lng) * 100) / 100;
@@ -930,7 +987,7 @@
 
     var lookup = function (store) {
       var key = self.normKey(store);
-      if (places[key]) return places[key];
+      if (places[key] && !self.isFarPlace_(places[key].lat, places[key].lng)) return places[key];
       if (calls >= limit) return undefined; // 今回は見送り
       calls++;
       var pl = self.resolvePlace(store);
@@ -1015,6 +1072,7 @@
         var pl = places[key];
         if (pl && pl.lat != null) { sLat = pl.lat; sLng = pl.lng; }
       }
+      if (this.isFarPlace_(sLat, sLng)) { sLat = null; sLng = null; }
       storeSet[key] = 1;
       if (sLat != null) locSet[key] = 1;
 
