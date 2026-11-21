@@ -108,11 +108,11 @@
         <button data-v="me">鳴ったときの自分の位置</button>
       </div>
       <div class="note" id="modeNote"></div>
-      <div class="label" style="margin-top:10px">店の半径の円</div>
+      <div class="label" style="margin-top:10px">店からの半径</div>
       <div class="seg" id="radSeg"></div>
-      <div class="note" id="radNote"></div>
-      <div class="label" style="margin-top:10px">等高線（半径内の数）</div>
+      <div class="label" style="margin-top:10px">店まわりの表示</div>
       <div class="seg" id="cntSeg"></div>
+      <div class="note" id="radNote"></div>
       <div class="note" id="cntNote"></div>
     </div>
     <div id="map"></div>
@@ -206,7 +206,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-08';
+var MAP_VERSION = '2026-11-21-09';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -222,8 +222,8 @@ var F = {
   days: [true, true, true, true, true, true, true],
   bands: [true, true, true, true, true, true, true, true],
   kinds: { normal: true, shop: true },
-  cnt: 'off',                // 等高線 off / stores(店数) / n(鳴った件数)
-  rad: 0,                    // 店を中心にした円の半径(km)。0は出さない
+  view: 'none',              // 店まわりの表示 none / circle(円) / stores(店数の等高線) / n(件数の等高線)
+  rad: 1,                    // 半径(km)
   len: [true, true, true],   // ショート／ミドル／ロング
   period: 'all',
   grid: 300,
@@ -375,14 +375,14 @@ function drawCircles(rows) {
     o.lat += p.sLat; o.lng += p.sLng; o.n++;
   });
   var names = Object.keys(m);
-  if (F.rad > 0) {
+  if (F.view === 'circle') {
     names.forEach(function (k) {
       var o = m[k];
       L.circle([o.lat / o.n, o.lng / o.n], { radius: F.rad * 1000, pane: 'circles', interactive: false,
         color: '#2d6cdf', weight: 1, opacity: 0.7, fillColor: '#2d6cdf', fillOpacity: 0.07 }).addTo(clayer);
     });
   }
-  $('radNote').textContent = F.rad > 0
+  $('radNote').textContent = F.view === 'circle'
     ? '鳴ったことのある店 ' + names.length + '店を中心に、半径' + (F.rad < 1 ? F.rad * 1000 + 'm' : F.rad + 'km') + 'の円（絞り込み中の記録が対象）'
     : '';
 }
@@ -527,8 +527,8 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
-  seg($('cntSeg'), [['off', 'なし'], ['stores', '店数'], ['n', '鳴った件数']], F.cnt, function (v) { F.cnt = v; renderCover(); });
-  seg($('radSeg'), [[0, 'なし'], [0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); renderCover(); });
+  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '店数の線'], ['n', '件数の線']], F.view, function (v) { F.view = v; renderMap(); renderCover(); });
+  seg($('radSeg'), [[0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); renderCover(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
     ? 'リクエストが出た店の場所（過去分も含む）。'
@@ -736,7 +736,7 @@ function useLocation() {
 /* ---------- 店の重なり（半径内の店数・鳴った件数） ---------- */
 
 var CVS = [];
-function coverR() { return F.rad > 0 ? F.rad : 1; }
+function coverR() { return F.rad; }
 function kmLabel(r) { return r < 1 ? r * 1000 + 'm' : r + 'km'; }
 
 function storeAgg(rows) {
@@ -781,7 +781,7 @@ function drawContours(R) {
   if (!ctlayer || !window.L) return;
   ctlayer.clearLayers();
   var note = $('cntNote');
-  if (F.cnt === 'off' || !CVS.length) { note.innerHTML = ''; return; }
+  if ((F.view !== 'stores' && F.view !== 'n') || !CVS.length) { note.innerHTML = ''; return; }
   var minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
   CVS.forEach(function (o) {
     minLat = Math.min(minLat, o.lat); maxLat = Math.max(maxLat, o.lat);
@@ -796,7 +796,7 @@ function drawContours(R) {
     var row = [];
     for (i = 0; i < nx; i++) {
       var c = coverStats(minLat + j * dLat, minLng + i * dLng, R, false);
-      var v = F.cnt === 'n' ? c.n : c.stores;
+      var v = F.view === 'n' ? c.n : c.stores;
       row.push(v); if (v > mx) mx = v;
     }
     g.push(row);
@@ -837,7 +837,7 @@ function drawContours(R) {
     }
     legend.push('<span style="color:' + col + ';font-weight:700">━ ' + lv + '</span>');
   });
-  note.innerHTML = '線の数字＝半径' + kmLabel(R) + '以内の' + (F.cnt === 'n' ? '鳴った件数' : '店数') + '（円「なし」のときは1km）<br>' + legend.join('　');
+  note.innerHTML = '線の数字＝半径' + kmLabel(R) + '以内の' + (F.view === 'n' ? '鳴った件数' : '店数') + '<br>' + legend.join('　');
 }
 
 function renderCover() {
@@ -845,7 +845,7 @@ function renderCover() {
   CVS = storeAgg(filtered());
   if (cvlayer) cvlayer.clearLayers();
   if (tlayer) tlayer.clearLayers();
-  $('coverSub').textContent = '半径' + kmLabel(R) + (F.rad > 0 ? '' : '（円「なし」のときは1km）');
+  $('coverSub').textContent = '半径' + kmLabel(R);
   drawContours(R);
   CVPICK = [];
   if (!CVS.length) { $('coverList').innerHTML = '<div class="empty">店の位置のある記録がありません。</div>'; return; }
