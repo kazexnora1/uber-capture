@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-21-02',
+  VERSION: '2026-11-21-03',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -889,7 +889,7 @@
     var lng = Number(payload && payload.lng);
     if (!isFinite(lat) || !isFinite(lng)) return null;
     if (lat < 20 || lat > 46 || lng < 122 || lng > 154) return null;
-    return { lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 };
+    return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
   },
 
   /** 2点間の直線距離（km）。ハーバーサイン */
@@ -978,8 +978,8 @@
 
   /**
    * 地図・集計ページ用（?pts=1）。全件の「時刻・店・種別・金額・分・km・位置」を、軽い配列で返す。
-   * 自分の位置は約110mに丸める。店の位置は、シートに無ければ places.json（店の座標のキャッシュ）から補う。
-   * 列：[時刻, 店, 買い物代行(1/0), 報酬, 提示分, km, 追加配達(1/0), 店lat, 店lng, 自分lat, 自分lng, 実績分]
+   * 自分の位置は約1mまで返す（受信時に小数5桁で保存）。店の位置は、シートに無ければ places.json（店の座標のキャッシュ）から補う。
+   * 列：[時刻, 店, 買い物代行(1/0), 報酬, 提示分, km, 追加配達(1/0), 店lat, 店lng, 自分lat, 自分lng, 実績分, 配達先住所, 完了時刻]
    */
   pointsData_: function () {
     var sh = this.getSheet_(false);
@@ -990,7 +990,12 @@
     var places = this.readJson(this.PLACES_FILE, {});
     var nf = places.__notfound || {};
     var num = function (x) { return (x === '' || x == null || isNaN(Number(x))) ? null : Number(x); };
-    var round3 = function (x) { var y = num(x); return y == null ? null : Math.round(y * 1000) / 1000; };
+    var round3 = function (x) { var y = num(x); return y == null ? null : Math.round(y * 1e5) / 1e5; };
+    var tsOf = function (t) {
+      if (t instanceof Date) return Utilities.formatDate(t, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm');
+      var q = String(t).slice(0, 16);
+      return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(q) ? q : null;
+    };
     var round5 = function (x) { return x == null ? null : Math.round(x * 1e5) / 1e5; };
 
     var rows = [];
@@ -1016,7 +1021,8 @@
       rows.push([
         ts, store, r[21] === '買い物代行' ? 1 : 0, num(r[4]), num(r[5]), num(r[6]),
         String(r[8]) === '追加' ? 1 : 0,
-        round5(sLat), round5(sLng), round3(r[24]), round3(r[25]), num(r[17])
+        round5(sLat), round5(sLng), round3(r[24]), round3(r[25]), num(r[17]),
+        String(r[3]), tsOf(r[19])
       ]);
     }
 
