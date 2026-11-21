@@ -191,7 +191,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-05';
+var MAP_VERSION = '2026-11-21-06';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -335,7 +335,7 @@ function metricOf(c) { return F.color === 'rate' ? c.rate : F.color === 'price' 
 function colorAt(t) {
   t = Math.max(0, Math.min(1, t));
   if (F.color === 'count') return 'hsl(215,72%,' + (66 - t * 30) + '%)';
-  return 'hsl(' + (8 + t * 120) + ',70%,44%)'; // 低い=赤、高い=緑
+  return 'hsl(' + (128 - t * 120) + ',70%,44%)'; // 低い=緑、高い=赤
 }
 
 function gradientCss() {
