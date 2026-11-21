@@ -188,7 +188,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-03';
+var MAP_VERSION = '2026-11-21-04';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -261,6 +261,7 @@ function loadData() {
     .then(function (d) {
       ALL = (d.rows || []).map(decode);
       META = { stores: d.stores || 0, located: d.located || 0, notFound: d.notFound || 0 };
+      mergeStores();
       computeGaps();
       MAXDAY = ALL.reduce(function (a, p) { return Math.max(a, p.day); }, 0);
       fitNext = true;
@@ -685,6 +686,62 @@ function useLocation() {
     btn.textContent = '現在地を使う';
     $('waitNote').textContent = '現在地を取得できませんでした。Safariの設定で、このページの位置情報を許可してください。';
   }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+}
+
+/* ---------- 店名のゆれをまとめる ---------- */
+
+// 英語表記や先頭の記号、空白を取った「日本語の店名」にする
+function cleanStore(s) {
+  s = String(s || '').replace(/^[^A-Za-z0-9ぁ-んァ-ヶ一-龠ー]+/, '');
+  var m = s.match(/^(.*?店)\s*[A-Za-z]/);   // 「…店」の後ろに続く英語表記だけを落とす
+  return (m ? m[1] : s).replace(/[\s\u3000•°]+/g, '');
+}
+
+function lev(a, b) {
+  var m = a.length, n = b.length, d = [], i, j;
+  for (j = 0; j <= n; j++) d.push(j);
+  for (i = 1; i <= m; i++) {
+    var prev = d[0]; d[0] = i;
+    for (j = 1; j <= n; j++) {
+      var t = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = t;
+    }
+  }
+  return d[n];
+}
+
+// 同じ店とみなす条件：①きれいにした名前が同じ ②名前が近く(2字以内)て、店の座標が150m以内
+// ④座標が30m以内で、名前の先頭4字が同じ
+// ③座標が無い場合は、12字以上で1字違いのときだけ（北口／南口のような別店を混ぜないため）
+function mergeStores() {
+  var info = {};
+  ALL.forEach(function (p) {
+    p.rawStore = p.store;
+    var k = cleanStore(p.store) || p.store;
+    var o = info[k] || (info[k] = { n: 0, lat: null, lng: null });
+    o.n++;
+    if (o.lat == null && p.sLat != null) { o.lat = p.sLat; o.lng = p.sLng; }
+  });
+  var keys = Object.keys(info).sort(function (a, b) { return info[b].n - info[a].n; });
+  var reps = [], to = {};
+  keys.forEach(function (k) {
+    var a = info[k], hit = null;
+    for (var i = 0; i < reps.length && !hit; i++) {
+      var r = reps[i], b = info[r], dl = lev(k, r);
+      if (a.lat != null && b.lat != null && hav(a.lat, a.lng, b.lat, b.lng) <= 0.03 && k.slice(0, 4) === r.slice(0, 4)) { hit = r; continue; }
+      if (dl > 2 || Math.abs(k.length - r.length) > 2) continue;
+      if (a.lat != null && b.lat != null) { if (hav(a.lat, a.lng, b.lat, b.lng) <= 0.15) hit = r; }
+      else if (dl <= 1 && Math.min(k.length, r.length) >= 12) hit = r;
+    }
+    if (hit) { to[k] = hit; if (info[hit].lat == null && a.lat != null) { info[hit].lat = a.lat; info[hit].lng = a.lng; } }
+    else { reps.push(k); to[k] = k; }
+  });
+  var shown = function (k) {   // 表示は、末尾に残った英語表記を落とす
+    var t = k.replace(/[A-Za-z][A-Za-z0-9'’&.\-]*$/, '');
+    return t.length >= 3 ? t : k;
+  };
+  ALL.forEach(function (p) { p.store = shown(to[cleanStore(p.rawStore) || p.rawStore]); });
 }
 
 /* ---------- 店ごとの鳴った距離 ---------- */
