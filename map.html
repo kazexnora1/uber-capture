@@ -171,7 +171,9 @@
       <div class="row" id="bandChips"></div>
       <div class="label">種類</div>
       <div class="row" id="kindChips"></div>
-      <div class="label">案件の長さ</div>
+      <div class="label">案件の長さ（分け方）</div>
+      <div class="seg" id="lenBySeg"></div>
+      <div class="label" style="margin-top:10px">案件の長さ</div>
       <div class="row" id="lenChips"></div>
       <div class="note" id="lenNote"></div>
       <div class="label">期間</div>
@@ -206,7 +208,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-09';
+var MAP_VERSION = '2026-11-21-11';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -224,6 +226,7 @@ var F = {
   kinds: { normal: true, shop: true },
   view: 'none',              // 店まわりの表示 none / circle(円) / stores(店数の等高線) / n(件数の等高線)
   rad: 1,                    // 半径(km)
+  lenBy: 'km',               // 案件の長さの分け方 km(距離) / price(金額)
   len: [true, true, true],   // ショート／ミドル／ロング
   period: 'all',
   grid: 300,
@@ -245,11 +248,11 @@ function yen(n) { return Math.round(n).toLocaleString('ja-JP') + '円'; }
 
 /* ---------- データ ---------- */
 
-// 案件の長さ：通常は提示金額（〜380／381〜459／460〜）、追加配達は距離で判定
+// 案件の長さ：距離（提示のkm）で判定。金額で分けるときは、通常は提示金額（〜380／381〜459／460〜）、追加配達は距離
 var LEN_NAMES = ['ショート', 'ミドル', 'ロング'];
 var KM_SM = 2.4, KM_ML = 3.5;   // 追加配達の距離の境目(km)。通常配達の距離の分布から決めた目安
 function lenOf(price, km, add) {
-  if (add) return km == null ? null : km <= KM_SM ? 0 : km <= KM_ML ? 1 : 2;
+  if (F.lenBy === 'km' || add) return km == null ? null : km <= KM_SM ? 0 : km <= KM_ML ? 1 : 2;
   return price == null ? null : price <= 380 ? 0 : price <= 459 ? 1 : 2;
 }
 
@@ -527,8 +530,8 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
-  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '店数の線'], ['n', '件数の線']], F.view, function (v) { F.view = v; renderMap(); renderCover(); });
-  seg($('radSeg'), [[0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); renderCover(); });
+  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '店数の線'], ['n', '件数の線']], F.view, function (v) { F.view = v; renderControls(); renderMap(); renderCover(); });
+  seg($('radSeg'), [[0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderControls(); renderMap(); renderCover(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
     ? 'リクエストが出た店の場所（過去分も含む）。'
@@ -550,6 +553,11 @@ function renderControls() {
     if (!F.kinds.normal && !F.kinds.shop) F.kinds[key] = true;
     fitNext = true; renderAll();
   });
+  seg($('lenBySeg'), [['km', '距離'], ['price', '金額']], F.lenBy, function (v) {
+    F.lenBy = v;
+    ALL.forEach(function (p) { p.len = lenOf(p.price, p.km, p.add); });
+    fitNext = true; renderAll();
+  });
   chips($('lenChips'), LEN_NAMES, F.len, function (i) {
     F.len[i] = !F.len[i];
     if (!F.len.some(Boolean)) F.len[i] = true;
@@ -562,7 +570,9 @@ function renderControls() {
     ls += nm + ' ' + g.length + '件' + (rs.length ? '・平均時給(提示) ' + yen(rs.reduce(function (a, p) { return a + p.rate; }, 0) / rs.length) : '') + '\n';
   });
   $('lenNote').style.whiteSpace = 'pre-line';
-  $('lenNote').textContent = ls + '通常は提示金額（〜380円／381〜459円／460円〜）。追加配達は距離（〜' + KM_SM + 'km／〜' + KM_ML + 'km／それ以上）で判定。';
+  $('lenNote').textContent = ls + (F.lenBy === 'km'
+    ? '提示の距離で判定（〜' + KM_SM + 'km／〜' + KM_ML + 'km／それ以上）。追加配達もその距離で分けています。'
+    : '通常は提示金額（〜380円／381〜459円／460円〜）。追加配達は距離（〜' + KM_SM + 'km／〜' + KM_ML + 'km／それ以上）で判定。');
   seg($('periodSeg'), [['all', '全期間'], ['30', '直近30日'], ['7', '直近7日']], F.period, function (v) { F.period = v; fitNext = true; renderAll(); });
   seg($('gridSeg'), [[150, '150m'], [300, '300m'], [600, '600m'], [1000, '1km']], F.grid, function (v) { F.grid = +v; renderAll(); });
   seg($('colorSeg'), [['rate', '時給'], ['price', '報酬'], ['count', '件数']], F.color, function (v) { F.color = v; renderAll(); });
