@@ -153,6 +153,9 @@
       <div class="row" id="bandChips"></div>
       <div class="label">種類</div>
       <div class="row" id="kindChips"></div>
+      <div class="label">案件の長さ</div>
+      <div class="row" id="lenChips"></div>
+      <div class="note" id="lenNote"></div>
       <div class="label">期間</div>
       <div class="seg" id="periodSeg"></div>
     </div>
@@ -185,7 +188,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-02';
+var MAP_VERSION = '2026-11-21-03';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -201,6 +204,7 @@ var F = {
   days: [true, true, true, true, true, true, true],
   bands: [true, true, true, true, true, true, true, true],
   kinds: { normal: true, shop: true },
+  len: [true, true, true],   // ショート／ミドル／ロング
   period: 'all',
   grid: 300,
   color: 'rate',
@@ -221,6 +225,14 @@ function yen(n) { return Math.round(n).toLocaleString('ja-JP') + '円'; }
 
 /* ---------- データ ---------- */
 
+// 案件の長さ：通常は提示金額（〜380／381〜459／460〜）、追加配達は距離で判定
+var LEN_NAMES = ['ショート', 'ミドル', 'ロング'];
+var KM_SM = 2.4, KM_ML = 3.5;   // 追加配達の距離の境目(km)。通常配達の距離の分布から決めた目安
+function lenOf(price, km, add) {
+  if (add) return km == null ? null : km <= KM_SM ? 0 : km <= KM_ML ? 1 : 2;
+  return price == null ? null : price <= 380 ? 0 : price <= 459 ? 1 : 2;
+}
+
 function decode(r) {
   var ts = r[0];
   var y = +ts.slice(0, 4), m = +ts.slice(5, 7), d = +ts.slice(8, 10), h = +ts.slice(11, 13);
@@ -234,7 +246,7 @@ function decode(r) {
     store: r[1],
     shop: r[2] === 1,
     price: r[3], min: r[4], km: r[5],
-    add: r[6] === 1,
+    add: r[6] === 1, len: lenOf(r[3], r[5], r[6] === 1),
     sLat: r[7], sLng: r[8],
     rLat: r[9], rLng: r[10],
     act: r[11], addr: r[12] || '', done: r[13] || null,
@@ -262,7 +274,8 @@ function loadData() {
 
 /* ---------- 絞り込み ---------- */
 
-function passBase(p) {
+function passBase(p, skipLen) {
+  if (!skipLen && p.len != null && !F.len[p.len]) return false;
   if (p.shop ? !F.kinds.shop : !F.kinds.normal) return false;
   if (F.period !== 'all' && p.day < MAXDAY - (F.period === '7' ? 6 : 29)) return false;
   return true;
@@ -473,7 +486,7 @@ function renderControls() {
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
     ? 'リクエストが出た店の場所（過去分も含む）。'
-    : '鳴ったとき（キャプチャ時）の自分の位置。約110mに丸めています。';
+    : '鳴ったとき（キャプチャ時）の自分の位置。';
 
   chips($('dayChips'), DOW, F.days, function (i) {
     F.days[i] = !F.days[i];
@@ -491,6 +504,19 @@ function renderControls() {
     if (!F.kinds.normal && !F.kinds.shop) F.kinds[key] = true;
     fitNext = true; renderAll();
   });
+  chips($('lenChips'), LEN_NAMES, F.len, function (i) {
+    F.len[i] = !F.len[i];
+    if (!F.len.some(Boolean)) F.len[i] = true;
+    fitNext = true; renderAll();
+  });
+  var ls = '', base = ALL.filter(function (p) { return passBase(p, true) && p.len != null; });
+  LEN_NAMES.forEach(function (nm, i) {
+    var g = base.filter(function (p) { return p.len === i; });
+    var rs = g.filter(function (p) { return p.rate != null; });
+    ls += nm + ' ' + g.length + '件' + (rs.length ? '・平均時給(提示) ' + yen(rs.reduce(function (a, p) { return a + p.rate; }, 0) / rs.length) : '') + '\n';
+  });
+  $('lenNote').style.whiteSpace = 'pre-line';
+  $('lenNote').textContent = ls + '通常は提示金額（〜380円／381〜459円／460円〜）。追加配達は距離（〜' + KM_SM + 'km／〜' + KM_ML + 'km／それ以上）で判定。';
   seg($('periodSeg'), [['all', '全期間'], ['30', '直近30日'], ['7', '直近7日']], F.period, function (v) { F.period = v; fitNext = true; renderAll(); });
   seg($('gridSeg'), [[150, '150m'], [300, '300m'], [600, '600m'], [1000, '1km']], F.grid, function (v) { F.grid = +v; renderAll(); });
   seg($('colorSeg'), [['rate', '時給'], ['price', '報酬'], ['count', '件数']], F.color, function (v) { F.color = v; renderAll(); });
