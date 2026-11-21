@@ -85,9 +85,9 @@
   .wbody .acts { display: flex; gap: 6px; margin-top: 6px; }
   .wbody .acts a, .wbody .acts button { font-size: 13px; padding: 6px 10px; min-height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--link); text-decoration: none; }
   .wmark { background: var(--link); color: #fff; border: 2px solid #fff; border-radius: 50%; width: 26px; height: 26px; text-align: center; line-height: 22px; font-weight: 700; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
-  .bar { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 3px 0; color: var(--muted); }
-  .bar b { flex: 0 0 64px; font-weight: 400; text-align: right; }
-  .bar i { display: block; height: 12px; background: var(--link); border-radius: 3px; min-width: 1px; }
+  .hbar { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 3px 0; color: var(--muted); }
+  .hbar b { flex: 0 0 64px; font-weight: 400; text-align: right; }
+  .hbar i { display: block; height: 12px; background: var(--link); border-radius: 3px; min-width: 1px; }
   select.pick { width: 100%; font-size: 15px; padding: 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); margin-top: 8px; }
   .big { font-size: 22px; font-weight: 700; color: var(--ink); }
   .verbar { text-align: center; color: var(--muted); font-size: 11px; padding-top: 4px; }
@@ -104,6 +104,9 @@
         <button data-v="me">鳴ったときの自分の位置</button>
       </div>
       <div class="note" id="modeNote"></div>
+      <div class="label" style="margin-top:10px">店の半径の円</div>
+      <div class="seg" id="radSeg"></div>
+      <div class="note" id="radNote"></div>
     </div>
     <div id="map"></div>
     <div class="sec">
@@ -188,7 +191,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-04';
+var MAP_VERSION = '2026-11-21-05';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -204,6 +207,7 @@ var F = {
   days: [true, true, true, true, true, true, true],
   bands: [true, true, true, true, true, true, true, true],
   kinds: { normal: true, shop: true },
+  rad: 0,                    // 店を中心にした円の半径(km)。0は出さない
   len: [true, true, true],   // ショート／ミドル／ロング
   period: 'all',
   grid: 300,
@@ -345,8 +349,31 @@ function fmtMetric(v) {
   return F.color === 'count' ? Math.round(v) + '件' : yen(v) + (F.color === 'rate' ? '/時' : '');
 }
 
+function drawCircles(rows) {
+  if (!clayer) return;
+  clayer.clearLayers();
+  var m = {};
+  rows.forEach(function (p) {
+    if (p.sLat == null) return;
+    var o = m[p.store] || (m[p.store] = { lat: 0, lng: 0, n: 0 });
+    o.lat += p.sLat; o.lng += p.sLng; o.n++;
+  });
+  var names = Object.keys(m);
+  if (F.rad > 0) {
+    names.forEach(function (k) {
+      var o = m[k];
+      L.circle([o.lat / o.n, o.lng / o.n], { radius: F.rad * 1000, pane: 'circles', interactive: false,
+        color: '#2d6cdf', weight: 1, opacity: 0.7, fillColor: '#2d6cdf', fillOpacity: 0.07 }).addTo(clayer);
+    });
+  }
+  $('radNote').textContent = F.rad > 0
+    ? '鳴ったことのある店 ' + names.length + '店を中心に、半径' + (F.rad < 1 ? F.rad * 1000 + 'm' : F.rad + 'km') + 'の円（絞り込み中の記録が対象）'
+    : '';
+}
+
 function renderMap() {
   var rows = filtered();
+  drawCircles(rows);
   var cells = cellsOf(rows);
   var withPos = rows.filter(function (p) { return (F.mode === 'store' ? p.sLat : p.rLat) != null; }).length;
 
@@ -484,6 +511,7 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
+  seg($('radSeg'), [[0, 'なし'], [0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderMap(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
     ? 'リクエストが出た店の場所（過去分も含む）。'
@@ -539,7 +567,7 @@ function renderImport() {
 /* ---------- 待機の候補 ---------- */
 
 var W = { when: 'now', grid: 600, radius: 0, pos: null };
-var wlayer = null, wRank = [], wMarkers = [];
+var clayer = null, wlayer = null, wRank = [], wMarkers = [];
 
 function hav(lat1, lng1, lat2, lng2) {
   var r = Math.PI / 180;
@@ -771,7 +799,7 @@ function renderDist() {
   var mx = Math.max.apply(null, bins), out = '';
   bins.forEach(function (c, i) {
     var lab = (i * step).toFixed(1) + (i === nb - 1 ? 'km〜' : '〜' + ((i + 1) * step).toFixed(1));
-    out += '<div class="bar"><b>' + lab + '</b><i style="width:' + Math.round(c / mx * 62) + '%"></i>' + c + '</div>';
+    out += '<div class="hbar"><b>' + lab + '</b><i style="width:' + Math.round(c / mx * 62) + '%"></i>' + c + '</div>';
   });
   out += '<div class="note">' + d.length + '件 ／ 中央値 ' + pct(d, 0.5).toFixed(2) + 'km ／ 25〜75% '
     + pct(d, 0.25).toFixed(2) + '〜' + pct(d, 0.75).toFixed(2) + 'km ／ 最大 ' + pct(d, 1).toFixed(2) + 'km</div>';
@@ -853,7 +881,7 @@ function renderNext() {
   var out = '<div>中央値 <span class="big">' + Math.round(med) + '分</span></div>';
   [5, 10, 15, 30].forEach(function (x) {
     var v = within(x);
-    out += '<div class="bar"><b>' + x + '分以内</b><i style="width:' + Math.round(v * 0.6) + '%"></i>' + v + '%</div>';
+    out += '<div class="hbar"><b>' + x + '分以内</b><i style="width:' + Math.round(v * 0.6) + '%"></i>' + v + '%</div>';
   });
   out += '<div class="note">根拠：' + (st.level === '町' ? '同じ町' : st.level === '市' ? '同じ市（町の記録が少ないため）' : '全体（記録が少ないため）')
     + ' ' + gaps.length + '件（時間帯が近いほど重く数えています）</div>';
@@ -917,6 +945,9 @@ if (window.L) {
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '© OpenStreetMap contributors'
   }).addTo(map);
+  map.createPane('circles');
+  map.getPane('circles').style.zIndex = 350;
+  clayer = L.layerGroup().addTo(map);
   layer = L.layerGroup().addTo(map);
   wlayer = L.layerGroup().addTo(map);
 } else {
