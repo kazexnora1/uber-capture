@@ -208,7 +208,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-11';
+var MAP_VERSION = '2026-11-21-12';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -224,7 +224,7 @@ var F = {
   days: [true, true, true, true, true, true, true],
   bands: [true, true, true, true, true, true, true, true],
   kinds: { normal: true, shop: true },
-  view: 'none',              // 店まわりの表示 none / circle(円) / stores(店数の等高線) / n(件数の等高線)
+  view: 'none',              // 店まわりの表示 none / circle(円) / stores(店数) / n(件数) / sum(店数+件数) の等高線
   rad: 1,                    // 半径(km)
   lenBy: 'km',               // 案件の長さの分け方 km(距離) / price(金額)
   len: [true, true, true],   // ショート／ミドル／ロング
@@ -530,7 +530,7 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
-  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '店数の線'], ['n', '件数の線']], F.view, function (v) { F.view = v; renderControls(); renderMap(); renderCover(); });
+  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '線・店数'], ['n', '線・件数'], ['sum', '線・店数+件数']], F.view, function (v) { F.view = v; renderControls(); renderMap(); renderCover(); });
   seg($('radSeg'), [[0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderControls(); renderMap(); renderCover(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
@@ -747,6 +747,9 @@ function useLocation() {
 
 var CVS = [];
 function coverR() { return F.rad; }
+// 等高線・上位5か所の数え方：店数 / 鳴った件数(のべ) / 店数+件数（円・なしのときは件数）
+function metricOf(stores, n) { return F.view === 'stores' ? stores : F.view === 'sum' ? stores + n : n; }
+function metricName() { return F.view === 'stores' ? '店数' : F.view === 'sum' ? '店数＋鳴った件数' : '鳴った件数'; }
 function kmLabel(r) { return r < 1 ? r * 1000 + 'm' : r + 'km'; }
 
 function storeAgg(rows) {
@@ -776,7 +779,7 @@ function coverStats(lat, lng, R, full) {
 
 function coverHtml(title, c) {
   if (!c.stores) return '<b>' + title + '</b><br>鳴ったことのある店はありません';
-  return '<b>' + title + '</b><br>店 ' + c.stores + '店 ／ 鳴った ' + c.n + '件'
+  return '<b>' + title + '</b><br>店 ' + c.stores + '店 ／ 鳴った ' + c.n + '件（合計 ' + (c.stores + c.n) + '）'
     + (c.rate != null ? '<br>平均時給（提示） ' + yen(c.rate) : '')
     + '<br>主な店：' + c.top.map(function (o) { return esc(o.name) + '（' + o.n + '）'; }).join('、');
 }
@@ -791,7 +794,7 @@ function drawContours(R) {
   if (!ctlayer || !window.L) return;
   ctlayer.clearLayers();
   var note = $('cntNote');
-  if ((F.view !== 'stores' && F.view !== 'n') || !CVS.length) { note.innerHTML = ''; return; }
+  if (['stores', 'n', 'sum'].indexOf(F.view) < 0 || !CVS.length) { note.innerHTML = ''; return; }
   var minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
   CVS.forEach(function (o) {
     minLat = Math.min(minLat, o.lat); maxLat = Math.max(maxLat, o.lat);
@@ -806,7 +809,7 @@ function drawContours(R) {
     var row = [];
     for (i = 0; i < nx; i++) {
       var c = coverStats(minLat + j * dLat, minLng + i * dLng, R, false);
-      var v = F.view === 'n' ? c.n : c.stores;
+      var v = metricOf(c.stores, c.n);
       row.push(v); if (v > mx) mx = v;
     }
     g.push(row);
@@ -847,7 +850,7 @@ function drawContours(R) {
     }
     legend.push('<span style="color:' + col + ';font-weight:700">━ ' + lv + '</span>');
   });
-  note.innerHTML = '線の数字＝半径' + kmLabel(R) + '以内の' + (F.view === 'n' ? '鳴った件数' : '店数') + '<br>' + legend.join('　');
+  note.innerHTML = '線の数字＝半径' + kmLabel(R) + '以内の' + metricName() + '<br>' + legend.join('　');
 }
 
 function renderCover() {
@@ -855,7 +858,7 @@ function renderCover() {
   CVS = storeAgg(filtered());
   if (cvlayer) cvlayer.clearLayers();
   if (tlayer) tlayer.clearLayers();
-  $('coverSub').textContent = '半径' + kmLabel(R);
+  $('coverSub').textContent = '半径' + kmLabel(R) + '・' + metricName() + '順';
   drawContours(R);
   CVPICK = [];
   if (!CVS.length) { $('coverList').innerHTML = '<div class="empty">店の位置のある記録がありません。</div>'; return; }
@@ -874,7 +877,7 @@ function renderCover() {
       if (c.n > 0) cands.push({ lat: la, lng: lo, n: c.n, st: c.stores });
     }
   }
-  cands.sort(function (a, b) { return b.n - a.n || b.st - a.st; });
+  cands.sort(function (a, b) { return metricOf(b.st, b.n) - metricOf(a.st, a.n) || b.n - a.n; });
   cands.forEach(function (d) {   // 半径の1.5倍より近い候補は同じ場所とみなして飛ばす
     if (CVPICK.length >= 5) return;
     var ok = CVPICK.every(function (q) {
@@ -889,7 +892,7 @@ function renderCover() {
     q.c = coverStats(q.lat, q.lng, R, true);
     var L_ = String.fromCharCode(65 + i);
     html += '<div class="item"><div class="wnum" style="background:var(--warn);border-radius:7px">' + L_ + '</div><div class="wbody">'
-      + '<b>' + q.c.n + '件・' + q.c.stores + '店</b><br>'
+      + '<b>' + q.c.n + '件・' + q.c.stores + '店</b>（合計 ' + (q.c.n + q.c.stores) + '）<br>'
       + (q.c.rate != null ? '平均時給（提示） ' + yen(q.c.rate) + '<br>' : '')
       + '主な店：' + q.c.top.map(function (o) { return esc(o.name) + '（' + o.n + '）'; }).join('、')
       + '<div class="acts"><button type="button" data-i="' + i + '">地図で見る</button></div></div></div>';
