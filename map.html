@@ -93,6 +93,8 @@
   .cmark { background: var(--warn); color: #fff; border: 2px solid #fff; border-radius: 7px; width: 26px; height: 26px; text-align: center; line-height: 22px; font-weight: 700; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
   .vbadge { position: fixed; left: 6px; top: calc(env(safe-area-inset-top, 0px) + 4px); z-index: 2000; font-size: 10px; line-height: 1.4; padding: 0 7px; border-radius: 8px; background: rgba(255,255,255,.82); color: var(--muted); border: 1px solid var(--line); pointer-events: none; }
   .clab { font-size: 10px; font-weight: 700; line-height: 1.3; padding: 0 4px; border-radius: 6px; background: rgba(255,255,255,.88); border: 1px solid; text-align: center; white-space: nowrap; }
+  #cntSeg { flex-wrap: wrap; }
+  #cntSeg button { flex: 1 1 30%; }
   .verbar { text-align: center; color: var(--muted); font-size: 11px; padding-top: 4px; }
 </style>
 </head>
@@ -129,6 +131,14 @@
       <div class="note">円の半径の中に入る店の数と、過去に鳴った件数の合計で数えています。地図をタップすると、その地点の数値が出ます。</div>
     </div>
     <div class="wlist" id="coverList"></div>
+  </div>
+
+  <div class="card" id="deadCard" hidden>
+    <div class="sec">
+      <div class="head"><b style="font-size:16px">受けにくい場所（デッドゾーン）</b><span class="sub" id="deadSub"></span></div>
+      <div class="note" id="deadNote"></div>
+    </div>
+    <div class="wlist" id="deadList"></div>
   </div>
 
   <div class="card" id="waitCard">
@@ -208,7 +218,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-21-12';
+var MAP_VERSION = '2026-11-21-13';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -224,7 +234,7 @@ var F = {
   days: [true, true, true, true, true, true, true],
   bands: [true, true, true, true, true, true, true, true],
   kinds: { normal: true, shop: true },
-  view: 'none',              // 店まわりの表示 none / circle(円) / stores(店数) / n(件数) / sum(店数+件数) の等高線
+  view: 'none',              // 店まわりの表示 none / circle(円) / stores・n・sum(等高線) / dead(デッドゾーン)
   rad: 1,                    // 半径(km)
   lenBy: 'km',               // 案件の長さの分け方 km(距離) / price(金額)
   len: [true, true, true],   // ショート／ミドル／ロング
@@ -530,7 +540,7 @@ function chips(el, labels, flags, onToggle) {
 }
 
 function renderControls() {
-  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '線・店数'], ['n', '線・件数'], ['sum', '線・店数+件数']], F.view, function (v) { F.view = v; renderControls(); renderMap(); renderCover(); });
+  seg($('cntSeg'), [['none', 'なし'], ['circle', '円'], ['stores', '店数の線'], ['n', '件数の線'], ['sum', '店数+件数の線'], ['dead', 'デッドゾーン']], F.view, function (v) { F.view = v; renderControls(); renderMap(); renderCover(); });
   seg($('radSeg'), [[0.5, '500m'], [1, '1km'], [1.5, '1.5km'], [2, '2km']], F.rad, function (v) { F.rad = +v; renderControls(); renderMap(); renderCover(); });
   seg($('modeSeg'), [['store', '店の位置'], ['me', '鳴ったときの自分の位置']], F.mode, function (v) { F.mode = v; fitNext = true; renderAll(); });
   $('modeNote').textContent = F.mode === 'store'
@@ -594,7 +604,7 @@ function renderImport() {
 /* ---------- 待機の候補 ---------- */
 
 var W = { when: 'now', grid: 600, radius: 0, pos: null };
-var clayer = null, ctlayer = null, cvlayer = null, tlayer = null, wlayer = null, wRank = [], wMarkers = [];
+var clayer = null, dlayer = null, ctlayer = null, cvlayer = null, tlayer = null, wlayer = null, wRank = [], wMarkers = [];
 
 function hav(lat1, lng1, lat2, lng2) {
   var r = Math.PI / 180;
@@ -786,6 +796,106 @@ function coverHtml(title, c) {
 
 var CVPICK = [];
 
+/* ---------- デッドゾーン（自分が動いた範囲のうち、鳴った記録が少ない所） ---------- */
+
+var DEADC = [];
+
+function drawDead(R) {
+  if (!dlayer || !window.L) return;
+  dlayer.clearLayers();
+  DEADC = [];
+  var card = $('deadCard');
+  if (F.view !== 'dead') { card.hidden = true; return; }
+  card.hidden = false;
+  $('deadSub').textContent = '半径' + kmLabel(R);
+  var ring = {};
+  filtered().forEach(function (p) {
+    if (p.rLat == null) return;
+    var k = Math.round(p.rLat * 1000) + ',' + Math.round(p.rLng * 1000);
+    ring[k] = [p.rLat, p.rLng];
+  });
+  var pts = Object.keys(ring).map(function (k) { return ring[k]; });
+  if (!pts.length || !CVS.length) {
+    $('deadNote').textContent = '自分の位置の記録がないため、動いた範囲を決められません。';
+    $('deadList').innerHTML = ''; return;
+  }
+  var minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  pts.forEach(function (q) {
+    minLat = Math.min(minLat, q[0]); maxLat = Math.max(maxLat, q[0]);
+    minLng = Math.min(minLng, q[1]); maxLng = Math.max(maxLng, q[1]);
+  });
+  var step = Math.max(0.3, R / 3);
+  var dLat = step / 110.57, dLng = step / (111.32 * Math.cos(35.7 * Math.PI / 180));
+  minLat -= R / 110.57; maxLat += R / 110.57; minLng -= R / 95; maxLng += R / 95;
+  var nx = Math.ceil((maxLng - minLng) / dLng), ny = Math.ceil((maxLat - minLat) / dLat), i, j;
+  var val = [], vals = [];
+  for (j = 0; j < ny; j++) {
+    val.push([]);
+    for (i = 0; i < nx; i++) {
+      var la = minLat + (j + 0.5) * dLat, lo = minLng + (i + 0.5) * dLng, cx = Math.cos(la * Math.PI / 180) * 111.32;
+      var inside = pts.some(function (q) { var dx = (q[1] - lo) * cx, dy = (q[0] - la) * 110.57; return dx * dx + dy * dy <= R * R; });
+      if (!inside) { val[j].push(null); continue; }
+      var n = coverStats(la, lo, R, false).n;
+      val[j].push(n); vals.push(n);
+    }
+  }
+  vals.sort(function (a, b) { return a - b; });
+  var med = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+  var T = Math.floor(med * 0.2);    // 中央値の2割以下を「少ない」とする
+  var flag = [];
+  for (j = 0; j < ny; j++) { flag.push([]); for (i = 0; i < nx; i++) { var v = val[j][i]; flag[j].push(v == null ? 0 : v === 0 ? 2 : v <= T ? 1 : 0); } }
+  for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) {
+    if (!flag[j][i]) continue;
+    L.rectangle([[minLat + j * dLat, minLng + i * dLng], [minLat + (j + 1) * dLat, minLng + (i + 1) * dLng]],
+      { pane: 'circles', interactive: false, stroke: false, fillColor: flag[j][i] === 2 ? '#333' : '#888', fillOpacity: flag[j][i] === 2 ? 0.5 : 0.35 }).addTo(dlayer);
+  }
+  // つながった範囲ごとにまとめて、広い順に並べる
+  var seen = [], comps = [];
+  for (j = 0; j < ny; j++) { seen.push([]); for (i = 0; i < nx; i++) seen[j].push(false); }
+  for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) {
+    if (!flag[j][i] || seen[j][i]) continue;
+    var st = [[j, i]], cells = [];
+    seen[j][i] = true;
+    while (st.length) {
+      var c = st.pop(); cells.push(c);
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var a = c[0] + d[0], b = c[1] + d[1];
+        if (a >= 0 && b >= 0 && a < ny && b < nx && flag[a][b] && !seen[a][b]) { seen[a][b] = true; st.push([a, b]); }
+      });
+    }
+    if (cells.length < 3) continue;
+    var sj = 0, si = 0, sn = 0, zero = 0, bj0 = 1e9, bj1 = -1, bi0 = 1e9, bi1 = -1;
+    cells.forEach(function (c) {
+      sj += c[0]; si += c[1]; sn += val[c[0]][c[1]]; if (flag[c[0]][c[1]] === 2) zero++;
+      bj0 = Math.min(bj0, c[0]); bj1 = Math.max(bj1, c[0]); bi0 = Math.min(bi0, c[1]); bi1 = Math.max(bi1, c[1]);
+    });
+    comps.push({ area: cells.length * step * step, avg: sn / cells.length, zero: zero, k: cells.length,
+      lat: minLat + (sj / cells.length + 0.5) * dLat, lng: minLng + (si / cells.length + 0.5) * dLng,
+      b: [[minLat + bj0 * dLat, minLng + bi0 * dLng], [minLat + (bj1 + 1) * dLat, minLng + (bi1 + 1) * dLng]] });
+  }
+  comps.sort(function (a, b) { return b.area - a.area; });
+  DEADC = comps.slice(0, 5);
+  $('deadNote').innerHTML = '<span style="color:#333;font-weight:700">■</span> 半径内の鳴った件数が0件' + (T > 0 ? '　<span style="color:#888;font-weight:700">■</span> ' + T + '件以下（中央値 ' + med + '件の2割）' : '（中央値が' + med + '件のため、0件だけを表示）') + '<br>'
+    + '自分の位置の記録がある範囲だけが対象です。オフラインで動いていなかった場所も「少ない」と見えることがあります。';
+  var html = '';
+  DEADC.forEach(function (d, k) {
+    html += '<div class="item"><div class="wnum" style="background:#555">' + (k + 1) + '</div><div class="wbody">'
+      + '<b>約' + d.area.toFixed(1) + 'km²</b>（0件の部分 約' + (d.zero * step * step).toFixed(1) + 'km²）<br>'
+      + 'この範囲の平均 ' + d.avg.toFixed(1) + '件'
+      + '<div class="acts"><button type="button" data-i="' + k + '">地図で見る</button></div></div></div>';
+  });
+  $('deadList').innerHTML = html || '<div class="empty">まとまった範囲はありません。</div>';
+  Array.prototype.forEach.call($('deadList').querySelectorAll('button[data-i]'), function (b) {
+    b.onclick = function () {
+      var d = DEADC[+b.getAttribute('data-i')];
+      tlayer.clearLayers();
+      L.rectangle(d.b, { color: '#d9822b', weight: 2, dashArray: '6 4', fill: false, interactive: false }).addTo(tlayer);
+      map.fitBounds(d.b, { padding: [30, 30] });
+      $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+  });
+}
+
 // 半径R内の店数（または鳴った件数）を格子で計算し、等高線(marching squares)で描く
 var CT_CASES = { 1: [['L', 'B']], 2: [['B', 'R']], 3: [['L', 'R']], 4: [['T', 'R']], 5: [['T', 'L'], ['B', 'R']], 6: [['T', 'B']], 7: [['T', 'L']],
   8: [['T', 'L']], 9: [['T', 'B']], 10: [['T', 'R'], ['L', 'B']], 11: [['T', 'R']], 12: [['L', 'R']], 13: [['B', 'R']], 14: [['L', 'B']] };
@@ -860,6 +970,7 @@ function renderCover() {
   if (tlayer) tlayer.clearLayers();
   $('coverSub').textContent = '半径' + kmLabel(R) + '・' + metricName() + '順';
   drawContours(R);
+  drawDead(R);
   CVPICK = [];
   if (!CVS.length) { $('coverList').innerHTML = '<div class="empty">店の位置のある記録がありません。</div>'; return; }
 
@@ -1153,6 +1264,7 @@ if (window.L) {
   clayer = L.layerGroup().addTo(map);
   layer = L.layerGroup().addTo(map);
   wlayer = L.layerGroup().addTo(map);
+  dlayer = L.layerGroup().addTo(map);
   ctlayer = L.layerGroup().addTo(map);
   cvlayer = L.layerGroup().addTo(map);
   tlayer = L.layerGroup().addTo(map);
