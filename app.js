@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-21-05',
+  VERSION: '2026-11-26-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -12,6 +12,47 @@
   STOREINFO_FILE: 'storeinfo.json',
   ELEVATION_FILE: 'elevation.json',
   PLACES_FILE: 'places.json',
+  DROPGEO_FILE: 'dropgeo.json',
+
+  /* JR中央線（東京〜高尾）。駅の座標をつないだ線から、南北それぞれ halfKm 以内を「圏内」とする。
+     座標は目安。地図（map.html）の駅ドットと実際の線路がずれていたら、ここを直す */
+  CORRIDOR: {
+    halfKm: 1,
+    stations: [
+      ['東京', 35.68124, 139.76712],
+      ['神田', 35.69169, 139.77088],
+      ['御茶ノ水', 35.69968, 139.7653],
+      ['水道橋', 35.702, 139.7532],
+      ['飯田橋', 35.702, 139.745],
+      ['市ケ谷', 35.691, 139.7357],
+      ['四ツ谷', 35.686, 139.7303],
+      ['信濃町', 35.6803, 139.7202],
+      ['千駄ケ谷', 35.6812, 139.7113],
+      ['代々木', 35.683, 139.702],
+      ['新宿', 35.68963, 139.70046],
+      ['大久保', 35.7011, 139.6973],
+      ['東中野', 35.7057, 139.6843],
+      ['中野', 35.70536, 139.66573],
+      ['高円寺', 35.7053, 139.6497],
+      ['阿佐ケ谷', 35.70466, 139.63575],
+      ['荻窪', 35.7044, 139.6202],
+      ['西荻窪', 35.70355, 139.59966],
+      ['吉祥寺', 35.703, 139.5798],
+      ['三鷹', 35.70255, 139.5608],
+      ['武蔵境', 35.7013, 139.5437],
+      ['東小金井', 35.7001, 139.5218],
+      ['武蔵小金井', 35.70063, 139.5077],
+      ['国分寺', 35.7003, 139.4801],
+      ['西国分寺', 35.6994, 139.4624],
+      ['国立', 35.6998, 139.4455],
+      ['立川', 35.6981, 139.4138],
+      ['日野', 35.6754, 139.3947],
+      ['豊田', 35.6606, 139.3828],
+      ['八王子', 35.6558, 139.3389],
+      ['西八王子', 35.6541, 139.3163],
+      ['高尾', 35.642, 139.2823]
+    ]
+  },
 
   /* 全件のマスター（スプレッドシート）。IDはスクリプトプロパティに保存される */
   SHEET_PROP: 'UBERLOG_SHEET_ID',
@@ -256,6 +297,54 @@
   },
 
   /* ---------- 画面から呼ばれる処理 ---------- */
+
+  /* ---------- 中央線の帯（圏内／圏外の判定） ---------- */
+
+  /** 地図の帯の描画用。線の座標と幅を返す */
+  api_corridor: function () {
+    return { status: 'ok', halfKm: this.CORRIDOR.halfKm, stations: this.CORRIDOR.stations };
+  },
+
+  /** 点から中央線（駅をつないだ折れ線）までの最短距離(km)と、近い駅名 */
+  corridorDist_: function (lat, lng) {
+    var st = this.CORRIDOR.stations;
+    var kx = Math.cos(lat * Math.PI / 180) * 111.32, ky = 110.57, best = null;
+    for (var i = 0; i < st.length - 1; i++) {
+      var ax = (st[i][2] - lng) * kx, ay = (st[i][1] - lat) * ky;
+      var bx = (st[i + 1][2] - lng) * kx, by = (st[i + 1][1] - lat) * ky;
+      var dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+      var t = len2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      var px = ax + t * dx, py = ay + t * dy, d = Math.sqrt(px * px + py * py);
+      if (!best || d < best.km) best = { km: d, near: t < 0.5 ? st[i][0] : st[i + 1][0] };
+    }
+    return best;
+  },
+
+  /**
+   * 配達先（ドロップの住所）が中央線の帯の中か外かを調べる。
+   * 住所→座標は dropgeo.json にキャッシュする（同じ住所は2回目から通信しない）。
+   */
+  api_dropCheck: function (address) {
+    if (!address) return { status: 'empty' };
+    var key = this.normKey(address);
+    var cache = this.readJson(this.DROPGEO_FILE, {});
+    var g = cache[key];
+    if (!g) {
+      var apiKey = PropertiesService.getScriptProperties().getProperty('MAPS_API_KEY');
+      if (!apiKey) return { status: 'nokey' };
+      g = this.geocode(address, apiKey);
+      if (!g) return { status: 'geofail', message: '配達先の場所が特定できませんでした' };
+      var keys = Object.keys(cache);
+      if (keys.length >= 300) delete cache[keys[0]];   // 古いものから捨てる
+      cache[key] = g;
+      this.writeJson(this.DROPGEO_FILE, cache);
+    }
+    var r = this.corridorDist_(g.lat, g.lng);
+    return {
+      status: 'ok', km: Math.round(r.km * 10) / 10, half: this.CORRIDOR.halfKm,
+      inside: r.km <= this.CORRIDOR.halfKm, near: r.near
+    };
+  },
 
   /**
    * ピック(店名)からドロップ(住所)までの標高差を調べる。
