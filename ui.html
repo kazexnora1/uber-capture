@@ -391,7 +391,7 @@
 <script>
 /* GASのデプロイURL（Shortcutsのpostと同じもの） */
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
-var UI_VERSION = '2026-10-22-04';
+var UI_VERSION = '2026-11-26-01';
 
 var HISTORY = [];
 var MEMOS = {};
@@ -559,7 +559,7 @@ function render() {
     +   '<a class="btn" href="'
     +     esc(navitimeUrl(d.address)) + '">ナビタイムで開く</a>'
     + '</div>';
-  html += stopBlock('drop', 'ドロップ', d.address, dropExtra);
+  html += stopBlock('drop', 'ドロップ', d.address, dropExtra, dropBadge(d));
 
   html += '<div class="block">'
         +   '<div class="stats ' + cls + '">'
@@ -623,6 +623,35 @@ function render() {
   if (geoBtn) geoBtn.onclick = function () { geoNow(d, geoBtn); };
 
   autoGeo(d);
+  autoDrop(d);
+}
+
+/* ---- ドロップが中央線の帯（南北1km）の中か外か。外なら赤で知らせる ---- */
+
+function dropBadge(d) {
+  var r = d.dropChk;
+  if (r) {
+    return r.inside
+      ? '<span class="pdist" id="dropChk" style="font-size:13px;color:var(--good)">中央線圏内（線から' + esc(String(r.km)) + 'km）</span>'
+      : '<span class="pdist" id="dropChk" style="color:var(--warn)">⚠ 中央線の圏外（線から' + esc(String(r.km)) + 'km）</span>';
+  }
+  return '<span class="pdist unknown" id="dropChk">' + (d.dropFail ? '配達先の場所が不明' : '中央線圏を確認中…') + '</span>';
+}
+
+function autoDrop(d) {
+  if (!d.address || d.dropChk || d.dropFail || d._dropBusy) return;
+  d._dropBusy = true;
+  var done = function () {
+    d._dropBusy = false;
+    var el = document.getElementById('dropChk');
+    if (HISTORY[idx] === d && el) el.outerHTML = dropBadge(d);
+  };
+  callApi('dropCheck', [d.address])
+    .then(function (r) {
+      if (r && r.status === 'ok') d.dropChk = r; else d.dropFail = true;
+      done();
+    })
+    .catch(function () { d.dropFail = true; done(); });
 }
 
 /* ---- 位置はあるのに距離が無い記録は、開いたときに自動で計算する（キャプチャ自体は遅くしない） ---- */
