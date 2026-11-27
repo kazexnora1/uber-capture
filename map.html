@@ -221,7 +221,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-26-01';
+var MAP_VERSION = '2026-11-27-01';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -1275,7 +1275,7 @@ function drawCorridor() {
   var note = $('corrNote');
   if (!COR || !F.corr) { note.className = 'note'; note.textContent = COR ? '' : note.textContent; return; }
   var st = COR.stations, h = COR.halfKm, i;
-  var band = { pane: 'corridor', stroke: false, fillColor: '#e8590c', fillOpacity: 1, interactive: false };
+  var band = { pane: 'corridor', stroke: false, fillColor: '#e03131', fillOpacity: 1, interactive: false };
   for (i = 0; i < st.length - 1; i++) {
     var a = st[i], b = st[i + 1];
     var kx = Math.cos((a[1] + b[1]) / 2 * Math.PI / 180) * 111.32, ky = 110.57;
@@ -1284,9 +1284,11 @@ function drawCorridor() {
     L.polygon([[a[1] + oLat, a[2] + oLng], [b[1] + oLat, b[2] + oLng], [b[1] - oLat, b[2] - oLng], [a[1] - oLat, a[2] - oLng]], band).addTo(corLayer);
   }
   st.forEach(function (s) { L.circle([s[1], s[2]], Object.assign({ radius: h * 1000 }, band)).addTo(corLayer); });
-  L.polyline(st.map(function (s) { return [s[1], s[2]]; }), { pane: 'circles', color: '#e8590c', weight: 3, opacity: 0.9, interactive: false }).addTo(corLayer);
+  // 駅ごとの半径 h km の円（輪郭だけ）
+  st.forEach(function (s) { L.circle([s[1], s[2]], { radius: h * 1000, pane: 'circles', color: '#e03131', weight: 1.5, opacity: 0.8, fill: false, interactive: false }).addTo(corLayer); });
+  L.polyline(st.map(function (s) { return [s[1], s[2]]; }), { pane: 'circles', color: '#e03131', weight: 3, opacity: 0.9, interactive: false }).addTo(corLayer);
   st.forEach(function (s) {
-    L.circleMarker([s[1], s[2]], { pane: 'circles', radius: 4, color: '#fff', weight: 1.5, fillColor: '#e8590c', fillOpacity: 1, bubblingMouseEvents: false })
+    L.circleMarker([s[1], s[2]], { pane: 'circles', radius: 4, color: '#fff', weight: 1.5, fillColor: '#e03131', fillOpacity: 1, bubblingMouseEvents: false })
       .bindPopup('<b>' + esc(s[0]) + '</b>').addTo(corLayer);
   });
   note.className = 'note';
