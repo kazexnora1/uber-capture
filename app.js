@@ -1,5 +1,5 @@
 ({
-  VERSION: '2026-11-26-01',
+  VERSION: '2026-11-27-01',
 
   SRC_LOGIC: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/logic.js',
   SRC_FIXTURES: 'https://raw.githubusercontent.com/kazexnora1/uber-capture/main/fixtures.json',
@@ -14,7 +14,7 @@
   PLACES_FILE: 'places.json',
   DROPGEO_FILE: 'dropgeo.json',
 
-  /* JR中央線（東京〜高尾）。駅の座標をつないだ線から、南北それぞれ halfKm 以内を「圏内」とする。
+  /* JR中央線（東京〜立川）。駅の座標をつないだ線から、南北それぞれ halfKm 以内を「圏内」とする。
      座標は目安。地図（map.html）の駅ドットと実際の線路がずれていたら、ここを直す */
   CORRIDOR: {
     halfKm: 1,
@@ -45,12 +45,7 @@
       ['国分寺', 35.7003, 139.4801],
       ['西国分寺', 35.6994, 139.4624],
       ['国立', 35.6998, 139.4455],
-      ['立川', 35.6981, 139.4138],
-      ['日野', 35.6754, 139.3947],
-      ['豊田', 35.6606, 139.3828],
-      ['八王子', 35.6558, 139.3389],
-      ['西八王子', 35.6541, 139.3163],
-      ['高尾', 35.642, 139.2823]
+      ['立川', 35.6981, 139.4138]
     ]
   },
 
