@@ -85,6 +85,9 @@
   .wbody .acts { display: flex; gap: 6px; margin-top: 6px; }
   .wbody .acts a, .wbody .acts button { font-size: 13px; padding: 6px 10px; min-height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--chip); color: var(--link); text-decoration: none; }
   .wmark { background: var(--link); color: #fff; border: 2px solid #fff; border-radius: 50%; width: 26px; height: 26px; text-align: center; line-height: 22px; font-weight: 700; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+  .drow { padding: 8px 2px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .drow b { font-size: 14px; color: var(--ink); }
+  .drow.on b { color: var(--link); }
   .hbar { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 3px 0; color: var(--muted); }
   .hbar b { flex: 0 0 64px; font-weight: 400; text-align: right; }
   .hbar i { display: block; height: 12px; background: var(--link); border-radius: 3px; min-width: 1px; }
@@ -163,6 +166,9 @@
       <div class="head"><b style="font-size:16px">店ごとの「鳴った距離」</b><span class="sub">自分の位置 → 店</span></div>
       <select class="pick" id="distSel"></select>
       <div id="distOut" style="margin-top:10px"></div>
+      <div class="label" style="margin-top:14px">店ごとの比較（3件以上の店）</div>
+      <div class="seg" id="distSortSeg"></div>
+      <div id="distList" style="margin-top:6px"></div>
     </div>
   </div>
 
@@ -221,7 +227,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var MAP_VERSION = '2026-11-27-01';
+var MAP_VERSION = '2026-11-27-02';
 var API_URL = 'https://script.google.com/macros/s/AKfycbxcQPRdgT4niOmlhP5c6mfKZr5aeDhKqgwYBlxpUqtCT2h05zYcI6P_VD8SFWub87-gAw/exec';
 
 var DOW = ['月', '火', '水', '木', '金', '土', '日'];
@@ -1092,7 +1098,7 @@ function mergeStores() {
 
 /* ---------- 店ごとの鳴った距離 ---------- */
 
-var D = { store: '*' };
+var D = { store: '*', sort: 'n' };
 
 function renderDist() {
   var rows = ALL.filter(function (p) { return passBase(p) && p.rLat != null && p.sLat != null; });
@@ -1107,6 +1113,27 @@ function renderDist() {
   if (D.store !== '*' && !cnt[D.store]) D.store = '*';
   sel.value = D.store;
   sel.onchange = function () { D.store = sel.value; renderDist(); };
+
+  // 全店の比較表（鳴った位置→店の距離。件数が3件以上の店）
+  var by = {};
+  rows.forEach(function (p) { (by[p.store] = by[p.store] || []).push(hav(p.rLat, p.rLng, p.sLat, p.sLng)); });
+  var tbl = names.map(function (k) {
+    var a = by[k];
+    return { k: k, n: a.length, med: pct(a, 0.5), q1: pct(a, 0.25), q3: pct(a, 0.75), max: pct(a, 1) };
+  });
+  tbl.sort(function (a, b) {
+    return D.sort === 'near' ? a.med - b.med : D.sort === 'far' ? b.med - a.med : b.n - a.n;
+  });
+  seg($('distSortSeg'), [['n', '件数順'], ['near', '近い順'], ['far', '遠い順']], D.sort, function (v) { D.sort = v; renderDist(); });
+  var lh = '';
+  tbl.forEach(function (t, i) {
+    lh += '<div class="drow' + (t.k === D.store ? ' on' : '') + '" data-i="' + i + '"><b>' + esc(t.k) + '</b>　' + t.n + '件<br>'
+      + '中央値 ' + t.med.toFixed(2) + 'km ／ 25〜75% ' + t.q1.toFixed(2) + '〜' + t.q3.toFixed(2) + 'km ／ 最大 ' + t.max.toFixed(2) + 'km</div>';
+  });
+  $('distList').innerHTML = lh || '<div class="empty">3件以上ある店がまだありません。</div>';
+  Array.prototype.forEach.call($('distList').querySelectorAll('.drow'), function (el) {
+    el.onclick = function () { D.store = tbl[+el.getAttribute('data-i')].k; renderDist(); $('distSel').scrollIntoView({ block: 'center' }); };
+  });
 
   var d = rows.filter(function (p) { return D.store === '*' || p.store === D.store; })
     .map(function (p) { return hav(p.rLat, p.rLng, p.sLat, p.sLng); });
